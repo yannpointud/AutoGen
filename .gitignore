@@ -20,8 +20,11 @@ ENV/
 # Dossiers générés par l'exécution de la plateforme
 # Ces dossiers contiennent les projets créés et les logs, qui sont des artefacts
 # et non du code source de la plateforme.
-/projects/
-/logs/
+# Ignorer le CONTENU des dossiers générés, mais pas les dossiers eux-mêmes.
+# Le .gitkeep forcera le suivi des dossiers vides.
+/projects/*
+/logs/*
+
 
 
 # Artefacts de test
