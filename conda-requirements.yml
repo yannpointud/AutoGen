@@ -1,0 +1,37 @@
+name: AutoGen
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+    # Core dependencies - Version 6.5
+    - pyyaml>=6.0.1
+    - rich>=13.5.0
+    - python-dotenv>=1.0.0
+    
+    # LLM APIs
+    - mistralai>=1.0.0
+    - httpx>=0.25.0
+    
+    # RAG dependencies
+    - faiss-cpu>=1.7.4
+    - numpy>=1.24.0
+    
+    # JSON Processing (CRITICAL - était manquant)
+    - json5>=0.9.0
+    
+    # Logging
+    - python-json-logger>=2.0.7
+    
+    # Testing (optional)
+    - pytest>=7.4.0
+    - pytest-asyncio>=0.21.0
+    - pytest-cov>=4.1.0
+    
+    # Development tools (optional)
+    - black>=23.0.0
+    - flake8>=6.0.0
+    - mypy>=1.5.0
+    - pre-commit>=3.4.0

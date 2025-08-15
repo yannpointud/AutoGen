@@ -1,0 +1,50 @@
+# Fichiers de cache et compilés Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Dossiers d'environnement virtuel
+.venv/
+venv/
+env/
+ENV/
+
+# Dossiers de tests unitaires lors du dev
+/tests/
+
+# Fichiers de secrets et de configuration locale
+# Le fichier .env contient les clés API et ne doit JAMAIS être versionné
+.env
+
+# Dossiers générés par l'exécution de la plateforme
+# Ces dossiers contiennent les projets créés et les logs, qui sont des artefacts
+# et non du code source de la plateforme.
+/projects/
+/logs/
+
+
+# Artefacts de test
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+/__pycache__
+/.claude
+
+
+# Fichiers spécifiques aux IDEs
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Fichiers spécifiques au système d'exploitation
+.DS_Store
+Thumbs.db
+
+# Artefacts de packaging Python
+build/
+dist/
+*.egg-info/```

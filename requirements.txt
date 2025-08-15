@@ -1,0 +1,45 @@
+# Core dependencies - Version minimale requise pour AutoGen
+# Analysé à partir des imports réels du code source (version 6.5)
+
+# LLM APIs
+mistralai>=1.0.0
+httpx>=0.25.0
+
+# RAG and Vector Search
+faiss-cpu>=1.7.4
+numpy>=1.24.0
+
+# Configuration and Environment
+python-dotenv>=1.0.0
+pyyaml>=6.0.1
+
+# JSON Processing
+json5>=0.9.0
+
+# Logging
+python-json-logger>=2.0.7
+
+# CLI and UI
+rich>=13.5.0
+
+# Development tools (optional but recommended)
+black>=23.0.0
+flake8>=6.0.0
+mypy>=1.5.0
+
+# Testing (optional)
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.1.0
+
+# Optional dependencies for project templates
+# Uncomment as needed based on which templates you plan to use:
+# beautifulsoup4>=4.12.0  # For web scraping templates
+# requests>=2.31.0        # For HTTP requests in templates
+# fastapi>=0.103.0        # For API templates
+# uvicorn>=0.23.0         # For FastAPI server
+# pydantic>=2.4.0         # For data validation in templates
+# sqlalchemy>=2.0.0       # For database templates
+# alembic>=1.12.0         # For database migrations
+# psutil>=5.9.0           # For performance monitoring
+# click>=8.1.0            # For CLI templates

@@ -1,0 +1,237 @@
+# Configuration par défaut de la plateforme multi-agents
+# Version 3 agents : Supervisor, Analyst, Developer
+
+general:
+  platform_version: "3.0-simplified"
+  max_retries: 3
+  retry_delay: 5
+  llm_timeout: 120  # Réduire le timeout pour éviter les blocages
+  conversation_memory_size: 10
+  max_tokens: 32768
+  # Protection contre les blocages
+  max_prompt_length: 15000
+  rag_search_timeout: 10
+  # Rate limiting global pour tous les appels API
+  api_rate_limit_interval: 2  # Secondes entre chaque appel API (tous fournisseurs confondus)
+
+llm:
+  default_model: "mistral-small-latest"
+  temperature: 0.7   
+  models:
+    mistral:
+      api_base: "https://api.mistral.ai/v1"
+      models:
+        - name: "mistral-small-latest"
+          temperature: 0.7
+          max_tokens: 32768
+        - name: "mistral-medium-latest"
+          temperature: 0.7
+          max_tokens: 32768
+        - name: "mistral-large-latest"
+          temperature: 0.7
+          max_tokens: 32768
+        - name: "codestral-latest"
+          temperature: 0.3
+          max_tokens: 32768
+        - name: "magistral-small-2506"
+          temperature: 0.7
+          max_tokens: 32768
+        - name: "magistral-medium-latest"
+          temperature: 0.7
+          max_tokens: 32768
+
+
+
+
+          
+    deepseek:
+      api_base: "https://api.deepseek.com/v1"
+      models:
+        - name: "deepseek-chat"
+          temperature: 0.7
+        - name: "deepseek-coder"
+          temperature: 0.3
+
+# Configuration du système d'outils
+tools:
+  # Configuration globale des outils
+  global:
+    # Format de logging des outils
+    log_format: json
+    # Timeout par défaut pour l'exécution d'un outil (secondes)
+    default_timeout: 60
+    # Activer le cache des résultats d'outils
+    enable_cache: false
+  
+  # Configuration spécifique par outil
+  specific:
+    implement_code:
+      max_lines: 500
+    create_tests:
+      default_coverage_target: 85
+      test_frameworks:
+        python: pytest
+        javascript: jest
+        typescript: jest
+    create_document:
+      max_length: 10000
+      default_format: markdown
+    generate_architecture_diagrams:
+      format: mermaid
+      max_nodes: 50
+
+
+agents:
+  supervisor:
+    role: "Superviseur et coordinateur principal du projet"
+    personality: "Méthodique, stratégique, orienté résultats. Excellent communicateur qui sait déléguer efficacement."
+    model: "magistral-medium-latest"
+    max_milestones: 10
+    allow_dynamic_milestones: true
+    guidelines:
+      - "Analyser le projet et identifier la complexité réelle (2-10 jalons selon besoins)"
+      - "Créer des jalons cohérents et atteignables"
+      - "Déléguer les tâches aux agents appropriés selon leurs forces"
+      - "Superviser sans micro-manager"
+      - "Arbitrer les conflits et débloquer les situations"
+      - "Maintenir une vision globale du projet"
+      - "Communiquer en JSON structuré quand c'est pertinent"
+  
+  analyst:
+    role: "Expert en analyse, architecture et qualité. Responsable de la conception complète et des standards."
+    personality: "Rigoureux, visionnaire, pédagogue. Équilibre parfait entre théorie et pratique."
+    model: "magistral-medium-latest"
+    guidelines:
+      - "COMMENCER par identifier le langage/framework approprié selon le projet"
+      - "Spécifier la stack technique dans les premières spécifications"
+      - "Analyser en profondeur les besoins fonctionnels et non-fonctionnels"
+      - "Concevoir une architecture robuste et évolutive"
+      - "Définir les standards de code et bonnes pratiques"
+      - "Créer des spécifications techniques détaillées"
+      - "Anticiper les contraintes et proposer des solutions"
+      - "Documenter clairement toutes les décisions importantes"
+      - "Établir les critères de qualité et métriques"
+      - "Communiquer en JSON pour les spécifications techniques"
+      - "Utiliser le RAG pour enrichir l'analyse avec le contexte projet"
+      - "TOUJOURS utiliser search_context pour vérifier l'existant avant de créer un nouveau document ou analyse"
+      - "En cas de doute sur la pertinence d'une analyse, consulter le SUPERVISEUR via send_message_to_agent('supervisor', 'question')"
+      - "Consulter le Developer pour valider la faisabilité technique"
+  
+  developer:
+    role: "Expert en développement, tests et documentation technique. Transforme les spécifications en code de qualité."
+    personality: "Pragmatique, créatif, rigoureux sur la qualité. Passionné par le code propre et les tests."
+    model: "codestral-latest"
+    guidelines:
+      - "TOUJOURS implémenter du code FONCTIONNEL et COMPLET - JAMAIS de stubs, placeholders ou commentaires 'à compléter' - sauf si après confirmation auprès d'un autre agent ce n'est plus pertinent"
+      - "Écrire du code qui fonctionne immédiatement après implémentation, avec toute la logique nécessaire"
+      - "Inclure la gestion d'erreurs complète (try/catch, validations, exceptions spécifiques)"
+      - "Implémenter toutes les fonctionnalités demandées dans la tâche, pas seulement les signatures"
+      - "Écrire des tests unitaires RÉELS qui testent le code implémenté (pas des tests vides)"
+      - "Ajouter des docstrings détaillées avec exemples d'utilisation concrets"
+      - "Créer des imports et dépendances nécessaires pour que le code soit exécutable"
+      - "Si une tâche demande 'calculatrice', implémenter VRAIMENT les 4 opérations arithmétiques"
+      - "Si une tâche demande 'CLI', implémenter VRAIMENT l'interface avec les outils standards du langage"
+      - "Utiliser le RAG pour comprendre le contexte, mais ignorer les exemples incomplets qu'il pourrait contenir"
+      - "TOUJOURS utiliser search_context pour vérifier l'existant avant de créer un nouveau fichier de code"
+      - "En cas de doute sur la pertinence ou la nécessité d'une tâche, consulter le SUPERVISEUR via send_message_to_agent('supervisor', 'question')"
+      - "Valider que le code généré est prêt pour la production, pas pour un prototype"
+      - "Préférer un code simple et fonctionnel à un code complexe mais incomplet"
+
+
+
+# Configuration du superviseur
+supervisor:
+  # Nombre minimum de jalons
+  min_milestones: 2
+  # Nombre maximum de jalons
+  max_milestones: 10
+  # Permettre l'ajout dynamique de jalons
+  allow_dynamic_milestones: true
+
+
+
+communication:
+  enabled: true
+  max_exchanges_per_task: 5
+  exchange_timeout: 30
+  log_exchanges: true
+  summarize_exchanges_in_rag: true
+  preferred_format: "json"
+  json_exchange_priority: 0.8
+
+rag:
+  embedding_model: "mistral-embed"
+  chunk_size: 500
+  chunk_overlap: 50
+  max_chunks_per_document: 50
+  top_k: 5
+  similarity_threshold: 0.65
+  enable_compression: true
+  compression_threshold: 0.8
+  max_vectors: 10000
+  
+  # Configuration de l'injection automatique de contexte
+  auto_context_injection:
+    enabled: true
+    max_context_length: 1500  # Réduire pour éviter les timeouts
+    max_results: 3            
+    cache_enabled: true       # Mise en cache des résultats par tâche
+    search_timeout: 10         # Timeout pour les recherches RAG (secondes)
+    
+    # Service LLM léger pour extraction intelligente de mots-clés
+    keyword_extraction:
+      enabled: true           # Utiliser LLM léger 
+      model: "mistral-small-latest"  # Modèle léger et rapide
+      max_tokens: 30         # Très court pour les mots-clés
+      temperature: 0.1       # Très déterministe
+      cache_ttl: 600         # Cache 10min (mots-clés stables)
+      timeout: 10            # Timeout rapide
+    
+    # Résumé intelligent de contexte long
+    context_summarization:
+      enabled: true           # Activer le résumé automatique
+      model: "mistral-small-latest"
+      max_input_length: 25000  # Maximum possible pour grandes quantités
+      max_output_length: 2000  # Résumé substantiel
+      temperature: 0.1
+      timeout: 30
+  
+  score_weights:
+    similarity: 0.6
+    freshness: 0.2
+    source: 0.2
+  
+  source_bonus:
+    project_file: 0.9
+    summary: 0.8
+    memory: 0.7
+    log_entry: 0.5
+    discovery: 0.6
+    conversation: 0.4
+  
+  proactive_queries:
+    - "architecture technique"
+    - "spécifications fonctionnelles"
+    - "contraintes et limitations"
+    - "standards de code"
+    - "tests et validation"
+  
+  min_confidence_score: 0.7
+  max_context_tokens: 2000
+  auto_index_enabled: true
+  auto_index_extensions: [".py", ".js", ".ts", ".java", ".md", ".json", ".yaml"]
+  auto_index_folders: ["src", "docs"]
+  working_memory_enabled: true
+  working_memory_ttl: 3600
+
+archiving:
+  enabled: true
+  max_messages_per_agent: 50
+  archive_after_milestone: false
+  compress_old_logs: true
+
+monitoring:
+  log_level: "DEBUG"
+  enable_metrics: true
+  metrics_export_interval: 300
+  performance_tracking: true
