@@ -3,6 +3,14 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+agents/__pycache__/
+core/__pycache__/
+utils/__pycache__/
+
+CLAUDE.md
+GEMINI.md
+
+test_*
 
 # Dossiers d'environnement virtuel
 .venv/

@@ -230,6 +230,7 @@ class MistralConnector(LLMConnector):
             params.pop('name', None)
             params.update(kwargs)
             
+            
             # Appliquer le rate limiting global avant la requête
             self._enforce_rate_limit()
             

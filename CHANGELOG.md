@@ -5,6 +5,53 @@ Toutes les modifications notables de ce projet sont documentées dans ce fichier
 Le format est basé sur [Keep a Changelog](https://keepachangelog.com/fr/1.0.0/),
 et ce projet adhère au [Versioning Sémantique](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2025-08-16
+
+### 🎉 Ajouté
+- **Système de compression mémoire conversationnelle** : Nouveau système automatique de compression des historiques de conversation
+  - **Seuil configurable** : `conversation_compression_threshold` (50000 chars par défaut)
+  - **Mémoire courte préservée** : Conservation des `conversation_memory_size` derniers messages (2 par défaut)
+  - **Compression intelligente** : Utilisation du service LLM léger pour résumer les anciens échanges
+  - **Logs détaillés** : Affichage précis des tailles avant/après compression avec différence
+
+### 🔧 Amélioré
+- **Logs LLM debug** : Redirection des logs vers `projects/{project}/logs/llm_debug/` pour isolation par projet
+- **Gestion mémoire agents** : Suppression de la troncature automatique (maxlen) au profit du système de compression
+- **Configuration centralisée** : Nouveaux paramètres de compression dans `default_config.yaml`
+
+### 🐛 Corrigé
+- **Double-comptage contexte RAG** : Correction du bug causant l'augmentation de taille lors de la compression
+- **Calcul taille prompt** : Méthode `_calculate_final_prompt_size()` pour mesures précises
+
+### 📋 Technique
+- Modules modifiés : `agents/base_agent.py`, `utils/logger.py`, `config/default_config.yaml`, `supervisor.py`
+- Nouveau système : Compression via `lightweight_llm_service.summarize_context()`
+- Architecture : Intégration complète avec le système RAG existant
+
+## [1.1.0] - 2025-08-15
+
+### ✨ Ajouté
+- **Boucle de Gouvernance Renforcée** : Transformation du superviseur en garant actif de conformité projet
+  - **Project Charter automatique** : Génération et préservation d'une charte projet structurée lors de la planification
+  - **Vérification intelligente des jalons** : Évaluation conditionnelle (rapide/approfondie) basée sur les auto-évaluations des agents
+  - **Auto-correction dynamique** : Ajout automatique de jalons correctifs en cas de non-conformité détectée
+  - **Rapports structurés** : Génération automatique de rapports d'auto-évaluation par les agents (compliant/partial/failed)
+
+### 🔧 Corrigé
+- **Format de réponse LLM** : Gestion robuste des réponses structurées du modèle `magistral-medium-latest` (format liste avec thinking/text)
+- **Stabilité RAG** : Protection contre les erreurs de type lors de l'indexation de contenu non-chaîne
+
+### 🏗️ Amélioré
+- **Préservation contextuelle** : Le Project Charter est automatiquement marqué `preserve: True` dans le RAG pour éviter la compression
+- **Journalisation enrichie** : Traçabilité complète des décisions de vérification et actions correctives
+- **Performance optimisée** : Vérification rapide pour les jalons conformes, évaluation approfondie uniquement si nécessaire
+
+### 📋 Technique
+- Nouveaux fichiers : `test_governance_implementation.py` (validation complète)
+- Modules modifiés : `agents/supervisor.py`, `agents/base_agent.py`
+- Tests : 4/5 tests de validation passants
+- Compatibilité : Aucune modification breaking, utilise les outils existants
+
 ## [1.0.0] - 2025-08-14
 
 ### 🎉 Ajouté

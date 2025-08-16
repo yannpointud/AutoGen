@@ -254,7 +254,9 @@ def log_llm_complete_exchange(
         context: Contexte additionnel (milestone, task_id, etc.)
     """
     # Logger spécialisé pour les échanges LLM DEBUG
-    llm_debug_logger = setup_llm_debug_logger()
+    # Extraire le nom du projet du contexte si disponible
+    project_name = context.get('project_name') if context else None
+    llm_debug_logger = setup_llm_debug_logger(project_name)
     
     # Compteur séquentiel global pour tracer l'ordre des appels
     if not hasattr(log_llm_complete_exchange, '_sequence_counter'):
@@ -301,14 +303,17 @@ def log_llm_complete_exchange(
     )
 
 
-def setup_llm_debug_logger() -> logging.Logger:
+def setup_llm_debug_logger(project_name: Optional[str] = None) -> logging.Logger:
     """
     Crée un logger spécialisé pour les échanges LLM DEBUG.
     Logs séparés pour faciliter l'analyse.
+    
+    Args:
+        project_name: Nom du projet pour logs spécifiques au projet
     """
     from config import default_config
     
-    logger_name = "LLM_DEBUG"
+    logger_name = f"LLM_DEBUG_{project_name}" if project_name else "LLM_DEBUG"
     
     # Éviter la duplication
     if logger_name in logging.Logger.manager.loggerDict:
@@ -327,7 +332,13 @@ def setup_llm_debug_logger() -> logging.Logger:
     )
     
     # Handler pour fichier dédié aux échanges LLM
-    llm_debug_dir = Path("logs/llm_debug")
+    if project_name:
+        # Logs dans le dossier du projet
+        llm_debug_dir = Path("projects") / project_name / "logs" / "llm_debug"
+    else:
+        # Logs globaux si pas de projet spécifique
+        llm_debug_dir = Path("logs/llm_debug")
+    
     llm_debug_dir.mkdir(parents=True, exist_ok=True)
     
     llm_debug_file = llm_debug_dir / f"llm_exchanges_{datetime.now().strftime('%Y%m%d')}.jsonl"

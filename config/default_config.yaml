@@ -7,10 +7,11 @@ general:
   max_retries: 3
   retry_delay: 5
   llm_timeout: 120  # Réduire le timeout pour éviter les blocages
-  conversation_memory_size: 10
+  conversation_memory_size: 5  # 5 de base
+  conversation_compression_threshold: 60000  #  Seuil en caractères pour déclencher la compression de l'historique 60000 moitié du max appel API
   max_tokens: 32768
   # Rate limiting global pour tous les appels API
-  api_rate_limit_interval: 2  # Secondes entre chaque appel API (tous fournisseurs confondus)
+  api_rate_limit_interval: 2  # Secondes entre chaque appel API (tous fournisseurs confondus) - Augmenté pour cycle cognitif hybride
 
 llm:
   default_model: "mistral-small-latest"
@@ -144,7 +145,7 @@ supervisor:
   # Nombre minimum de jalons
   min_milestones: 2
   # Nombre maximum de jalons
-  max_milestones: 10
+  max_milestones: 15
   # Permettre l'ajout dynamique de jalons
   allow_dynamic_milestones: true
 

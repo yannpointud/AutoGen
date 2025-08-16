@@ -17,6 +17,7 @@ import json5
 
 from utils.logger import get_project_logger, LoggerAdapter
 from core.llm_connector import LLMFactory
+from core.lightweight_llm_service import get_lightweight_llm_service
 from config import default_config
 
 
@@ -104,7 +105,7 @@ class BaseAgent(ABC):
         
         # Mémoire conversationnelle
         memory_size = default_config['general'].get('conversation_memory_size', 5)
-        self.conversation_memory = deque(maxlen=memory_size)
+        self.conversation_memory = deque()  # Pas de limite, compression gère la taille
         self._memory_lock = threading.Lock()
         
         # Système d'outils
@@ -124,7 +125,10 @@ class BaseAgent(ABC):
         # Guidelines
         self.guidelines = self._load_guidelines()
         
-        self.logger.info(f"Agent {name} initialisé avec architecture orientée outils")
+        # CYCLE COGNITIF HYBRIDE - Service léger pour phase d'alignement
+        self.lightweight_service = get_lightweight_llm_service(self.project_name)
+        
+        self.logger.info(f"Agent {name} initialisé avec architecture orientée outils + service léger")
     
     def register_tool(self, tool: Tool, implementation: Callable) -> None:
         """Enregistre un nouvel outil."""
@@ -672,7 +676,10 @@ Continuer l'amélioration de la couverture de tests.
     
     def think(self, task: Dict[str, Any]) -> Dict[str, Any]:
         """
-        L'agent réfléchit à la tâche et décide quels outils utiliser.
+        CYCLE COGNITIF HYBRIDE - Réflexion en deux phases d'alignement + raisonnement.
+        
+        Phase 1 (Lightweight LLM): Extraction rapide des contraintes critiques du Project Charter
+        Phase 2 (Main LLM): Raisonnement complexe guidé par les contraintes
         """
         self.update_state(status='thinking')
         
@@ -685,13 +692,42 @@ Continuer l'amélioration de la couverture de tests.
         # Réinitialiser le compteur d'échanges
         self.reset_exchange_counter()
         
-        # Construire le prompt pour le LLM
-        tools_description = self._format_tools_for_prompt()
+        # Mesurer les performances du cycle
+        cycle_start = time.time()
         
-        # Instruction spécifique pour les agents Developer
-        code_quality_reminder = ""
-        if self.name == "Developer":
-            code_quality_reminder = f"""
+        try:
+            # ========== PHASE 1: ALIGNEMENT (Lightweight LLM) ==========
+            self.logger.info("🔄 Démarrage CYCLE COGNITIF HYBRIDE - Phase d'Alignement")
+            alignment_start = time.time()
+            
+            # Récupérer le Project Charter depuis le RAG
+            project_charter = self._get_project_charter_from_rag()
+            
+            # Extraire les contraintes critiques pour cette tâche spécifique
+            if project_charter:
+                task_description = task.get('description', '')
+                critical_constraints = self.lightweight_service.summarize_constraints(
+                    project_charter, task_description
+                )
+                self.logger.debug(f"Contraintes extraites ({len(critical_constraints)} chars): {critical_constraints[:100]}...")
+            else:
+                critical_constraints = f"ATTENTION: Aucun Project Charter trouvé pour {self.project_name}. Procéder avec prudence."
+                self.logger.warning("Project Charter non trouvé, contraintes par défaut appliquées")
+            
+            alignment_duration = time.time() - alignment_start
+            self.logger.info(f"✅ Phase d'Alignement terminée en {alignment_duration:.2f}s")
+            
+            # ========== PHASE 2: RAISONNEMENT (Main LLM) ==========
+            self.logger.info("🧠 Démarrage Phase de Raisonnement avec contraintes")
+            reasoning_start = time.time()
+            
+            # Construire le prompt pour le LLM principal avec contraintes injectées
+            tools_description = self._format_tools_for_prompt()
+            
+            # Instruction spécifique pour les agents Developer
+            code_quality_reminder = ""
+            if self.name == "Developer":
+                code_quality_reminder = f"""
 
 🚨 IMPORTANT POUR LE CODE :
 - Génère du code FONCTIONNEL et COMPLET, pas des stubs ou placeholders
@@ -700,37 +736,48 @@ Continuer l'amélioration de la couverture de tests.
 - Implémente TOUTE la logique demandée dans la tâche
 """
 
-        thinking_prompt = f"""Tu es {self.name}, {self.role}.
+            # Prompt enrichi avec contraintes du Project Charter
+            thinking_prompt = f"""Tu es {self.name}, {self.role}.
 Personnalité: {self.personality}
 
-Tâche: {task.get('description', '')}
-Livrables attendus: {', '.join(task.get('deliverables', []))}
+🎯 CONTRAINTES CRITIQUES DU PROJET:
+{critical_constraints}
+
+📋 TÂCHE COURANTE:
+{task.get('description', '')}
+
+📦 LIVRABLES ATTENDUS: 
+{', '.join(task.get('deliverables', []))}
 {code_quality_reminder}
-Outils disponibles:
+
+🛠️ OUTILS DISPONIBLES:
 {tools_description}
 
-Guidelines:
+📖 GUIDELINES:
 {chr(10).join(['- ' + g for g in self.guidelines])}
 
-ANALYSE cette tâche en expliquant:
-1. PERTINENCE: Cette tâche est-elle encore nécessaire ? (utilise search_context pour vérifier l'existant)
-2. Ta compréhension de la tâche
-3. Ton plan d'approche pour l'accomplir  
-4. Quels outils tu vas utiliser et pourquoi
-5. Si tu as des doutes sur la pertinence, considère utiliser send_message_to_agent pour demander confirmation
+ANALYSE cette tâche en gardant STRICTEMENT en tête les contraintes du projet:
+1. ALIGNEMENT: Cette tâche respecte-t-elle les contraintes critiques identifiées ?
+2. PERTINENCE: Cette tâche est-elle encore nécessaire ? (utilise search_context pour vérifier l'existant)
+3. Ta compréhension de la tâche dans le contexte du projet
+4. Ton plan d'approche pour respecter les contraintes ET accomplir la tâche
+5. Quels outils tu vas utiliser et pourquoi
+6. Si tu as des doutes sur la pertinence ou l'alignement, considère utiliser send_message_to_agent
 
 Réponds en texte libre, PAS en JSON. Sois concis mais précis.
 """
-        
-        try:
-            # Générer l'analyse
+            
+            # Générer l'analyse avec contraintes intégrées
             analysis = self.generate_with_context(
                 prompt=thinking_prompt,
                 temperature=self.llm_config.get('temperature', 0.7)
             )
             
-            # Phase ACT séparée : Demander explicitement les outils en JSON
-            action_prompt = f"""Basé sur ton analyse précédente, maintenant AGIS avec les outils disponibles.
+            # Phase ACT avec contraintes rappelées
+            action_prompt = f"""🎯 RAPPEL DES CONTRAINTES CRITIQUES:
+{critical_constraints}
+
+Basé sur ton analyse précédente, maintenant AGIS avec les outils disponibles en RESPECTANT les contraintes.
 
 Outils disponibles:
 {tools_description}
@@ -790,24 +837,43 @@ RÉPONDS UNIQUEMENT AVEC LE JSON, AUCUN TEXTE AVANT OU APRÈS.
             # Parser les appels d'outils depuis la réponse JSON
             tool_calls = self._parse_tool_calls(actions_response)
             
+            reasoning_duration = time.time() - reasoning_start
+            cycle_total = time.time() - cycle_start
+            
+            self.logger.info(f"✅ Phase de Raisonnement terminée en {reasoning_duration:.2f}s")
+            self.logger.info(f"🎯 CYCLE COGNITIF HYBRIDE complet en {cycle_total:.2f}s (Alignement: {alignment_duration:.2f}s, Raisonnement: {reasoning_duration:.2f}s)")
+            
             plan = {
                 'task_id': self.state['current_task_id'],
                 'analysis': analysis,
                 'planned_tools': tool_calls,
                 'milestone_id': self.current_milestone_id,
                 'agent_name': self.name,
-                'timestamp': datetime.now().isoformat()
+                'timestamp': datetime.now().isoformat(),
+                # Métriques du cycle cognitif
+                'cognitive_cycle_metrics': {
+                    'total_duration': cycle_total,
+                    'alignment_duration': alignment_duration,
+                    'reasoning_duration': reasoning_duration,
+                    'project_charter_found': project_charter is not None,
+                    'constraints_extracted': len(critical_constraints)
+                },
+                'critical_constraints': critical_constraints
             }
             
             self.log_interaction('think', plan)
             return plan
             
         except Exception as e:
-            self.logger.error(f"Erreur lors de la réflexion: {str(e)}")
+            self.logger.error(f"💥 Erreur dans le CYCLE COGNITIF HYBRIDE: {str(e)}")
             return {
                 'task_id': self.state['current_task_id'],
                 'error': str(e),
-                'milestone_id': self.current_milestone_id
+                'milestone_id': self.current_milestone_id,
+                'cognitive_cycle_metrics': {
+                    'total_duration': time.time() - cycle_start,
+                    'error': str(e)
+                }
             }
     
     def act(self, plan: Dict[str, Any]) -> Dict[str, Any]:
@@ -862,7 +928,12 @@ RÉPONDS UNIQUEMENT AVEC LE JSON, AUCUN TEXTE AVANT OU APRÈS.
                     result['status'] = 'failed'
                 else:
                     result['status'] = 'completed'
-
+                    
+                    # PHASE 2: Génération du rapport structuré pour les tâches réussies
+                    if result['status'] == 'completed':
+                        structured_report = self._generate_structured_report(plan, result)
+                        result['structured_report'] = structured_report
+                        self.logger.info(f"Rapport structuré généré: {structured_report.get('self_assessment', 'unknown')}")
 
             
         except Exception as e:
@@ -872,6 +943,82 @@ RÉPONDS UNIQUEMENT AVEC LE JSON, AUCUN TEXTE AVANT OU APRÈS.
         
         self.log_interaction('act', result)
         return result
+    
+    def _generate_structured_report(self, plan: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        PHASE 2: Génère un rapport structuré pour la vérification intelligente.
+        """
+        try:
+            # Collecter les informations de base
+            artifacts_created = result.get('artifacts', [])
+            tools_executed = result.get('tools_executed', [])
+            milestone_id = plan.get('milestone_id', 'unknown')
+            
+            # Analyser les succès/échecs des outils
+            successful_tools = [t for t in tools_executed if t.get('status') == 'success']
+            failed_tools = [t for t in tools_executed if t.get('status') == 'error']
+            
+            # Évaluer la conformité basique
+            deliverables_expected = plan.get('deliverables', [])
+            deliverables_status = {}
+            
+            for deliverable in deliverables_expected:
+                # Vérification simple: chercher le nom du deliverable dans les artifacts
+                delivered = any(deliverable.lower() in str(artifact).lower() 
+                              for artifact in artifacts_created)
+                deliverables_status[deliverable] = 'completed' if delivered else 'missing'
+            
+            # Auto-évaluation basée sur les métriques
+            missing_deliverables = [d for d, status in deliverables_status.items() if status == 'missing']
+            has_artifacts = len(artifacts_created) > 0
+            has_failures = len(failed_tools) > 0
+            
+            # Logique d'auto-évaluation
+            if not missing_deliverables and has_artifacts and not has_failures:
+                self_assessment = 'compliant'
+                confidence_level = 0.9
+            elif not missing_deliverables and has_artifacts:
+                self_assessment = 'partial'  # Artefacts créés mais quelques échecs d'outils
+                confidence_level = 0.7
+            elif has_artifacts:
+                self_assessment = 'partial'  # Quelques artefacts mais pas tout
+                confidence_level = 0.5
+            else:
+                self_assessment = 'failed'   # Aucun artefact significatif
+                confidence_level = 0.2
+            
+            # Construire le rapport structuré
+            structured_report = {
+                'artifacts_created': artifacts_created,
+                'decisions_made': f"Exécution de {len(successful_tools)} outils avec succès",
+                'issues_encountered': [
+                    f"Outil {t.get('tool', 'unknown')} a échoué: {t.get('result', {}).get('error', 'Erreur inconnue')}"
+                    for t in failed_tools
+                ],
+                'self_assessment': self_assessment,
+                'confidence_level': confidence_level,
+                'deliverables_status': deliverables_status,
+                'milestone_id': milestone_id,
+                'agent_name': self.name,
+                'completion_timestamp': datetime.now().isoformat()
+            }
+            
+            return structured_report
+            
+        except Exception as e:
+            self.logger.error(f"Erreur génération rapport structuré: {e}")
+            # Rapport minimal en cas d'erreur
+            return {
+                'artifacts_created': result.get('artifacts', []),
+                'decisions_made': "Erreur lors de la génération du rapport détaillé",
+                'issues_encountered': [f"Erreur rapport: {str(e)}"],
+                'self_assessment': 'failed',
+                'confidence_level': 0.0,
+                'deliverables_status': {},
+                'milestone_id': plan.get('milestone_id', 'unknown'),
+                'agent_name': self.name,
+                'completion_timestamp': datetime.now().isoformat()
+            }
     
     def _format_tools_for_prompt(self) -> str:
         """Formate la liste des outils pour le prompt."""
@@ -996,6 +1143,69 @@ Maximum 3-4 phrases.
         
         messages.append({"role": "user", "content": prompt})
         
+        # COMPRESSION INTELLIGENTE : Vérifier si le prompt total dépasse le seuil
+        from config import default_config
+        compression_threshold = default_config['general']['conversation_compression_threshold']
+        total_prompt_size = self._calculate_final_prompt_size(messages, None)  # rag_context déjà inclus dans messages
+        
+        self.logger.debug(f"Prompt size: {total_prompt_size} chars, threshold: {compression_threshold}, history: {len(self.conversation_history)} msgs, memory: {len(self.conversation_memory)} msgs")
+        
+        if total_prompt_size > compression_threshold:
+            memory_size = default_config['general']['conversation_memory_size']
+            
+            # Isoler la mémoire à court terme (N derniers messages à protéger de la compression)
+            short_term_memory = list(self.conversation_memory)[-memory_size:] if len(self.conversation_memory) > memory_size else list(self.conversation_memory)
+            
+            # Messages à compresser = conversation_history moins les N derniers (protégés)
+            if len(self.conversation_history) > memory_size:
+                history_to_compress = self.conversation_history[:-memory_size]
+                
+                if history_to_compress:
+                    # Concaténer les anciens messages en texte
+                    old_text = "\n\n".join([
+                        f"[{msg.get('timestamp', '')}] {msg.get('role', '')}: {msg.get('content', '')}"
+                        for msg in history_to_compress
+                    ])
+                    
+                    try:
+                        # Compression via lightweight_llm_service (méthode dédiée conversation)
+                        compressed_summary = self.lightweight_service.summarize_conversation(old_text)
+                        
+                        # Reconstruction : créer des messages compressés 
+                        compressed_messages = []
+                        if rag_context:
+                            system_message = {
+                                "role": "system", 
+                                "content": f"Contexte projet pertinent :\n{rag_context}"
+                            }
+                            compressed_messages.append(system_message)
+                        
+                        # Créer un message résumé qui remplace les anciens messages
+                        if compressed_summary.strip():
+                            summary_message = {
+                                "role": "assistant",
+                                "content": f"[Résumé des échanges précédents : {compressed_summary}]"
+                            }
+                            compressed_messages.append(summary_message)
+                        
+                        # Ajouter la mémoire court terme intacte
+                        for msg in short_term_memory:
+                            compressed_messages.append({"role": msg["role"], "content": msg["content"]})
+                        
+                        # Ajouter le nouveau prompt
+                        compressed_messages.append({"role": "user", "content": prompt})
+                        
+                        # Utiliser les messages compressés
+                        messages = compressed_messages
+                        
+                        # Calculer la taille après compression (ne pas re-passer rag_context car déjà inclus dans messages)
+                        final_prompt_size = self._calculate_final_prompt_size(messages, None)
+                        
+                        self.logger.info(f"⚡ Compression appliquée : {total_prompt_size} chars -> {final_prompt_size} chars ({final_prompt_size - total_prompt_size:+d})")
+                    
+                    except Exception as e:
+                        self.logger.warning(f"Échec de la compression, prompt non modifié: {str(e)}")
+        
         self.add_message_to_memory("user", prompt)
         
         llm = LLMFactory.create(model=self.llm_config['model'])
@@ -1011,9 +1221,64 @@ Maximum 3-4 phrases.
         
         response = llm.generate_with_messages(messages=messages, agent_context=agent_context, **kwargs)
         
+        # Correction robuste: gérer le format de réponse structuré du modèle magistral
+        if isinstance(response, list):
+            # Extraire le contenu "text" de la réponse structurée
+            text_content = None
+            for item in response:
+                if isinstance(item, str) and item.startswith('text="'):
+                    # Format: text="contenu réel..."
+                    text_content = item[6:]  # Enlever 'text="'
+                    if text_content.endswith('"'):
+                        text_content = text_content[:-1]  # Enlever '"' final
+                    break
+                elif isinstance(item, str) and 'text=' in item:
+                    # Autre format possible
+                    text_start = item.find('text="') + 6
+                    text_end = item.rfind('"')
+                    if text_start > 5 and text_end > text_start:
+                        text_content = item[text_start:text_end]
+                        break
+            
+            if text_content:
+                response = text_content
+                self.logger.info(f"Réponse structurée extraite: {len(response)} caractères")
+            else:
+                # Fallback: joindre tous les éléments
+                response = '\n'.join(str(item) for item in response)
+                self.logger.warning(f"Réponse liste non structurée, jointure: {len(response)} caractères")
+        elif not isinstance(response, str):
+            # Forcer la conversion en chaîne pour tous les autres types
+            response = str(response)
+            self.logger.warning(f"LLM a retourné un type inattendu {type(response)}, conversion en chaîne")
+        
         self.add_message_to_memory("assistant", response)
         
         return response
+    
+    def _calculate_final_prompt_size(self, messages: List[Dict[str, str]], rag_context: Optional[str] = None) -> int:
+        """
+        Calcule la taille totale du prompt final qui sera envoyé au LLM.
+        Simule la construction complète incluant tous les composants.
+        """
+        total_size = 0
+        
+        # Taille des messages de conversation
+        for message in messages:
+            total_size += len(str(message.get('content', '')))
+            total_size += len(str(message.get('role', '')))
+            total_size += 10  # Estimation overhead JSON/format
+        
+        # Taille du contexte RAG s'il existe
+        if rag_context:
+            total_size += len(rag_context)
+            total_size += 50  # Overhead pour l'injection du contexte
+        
+        # Estimation de l'overhead du prompt système de l'agent (role, guidelines, etc.)
+        total_size += len(self.role) if hasattr(self, 'role') else 0
+        total_size += 500  # Estimation conservative pour le prompt système et instructions
+        
+        return total_size
     
     def _get_smart_rag_context(self, prompt: str) -> Optional[str]:
         """
@@ -1166,6 +1431,90 @@ Maximum 3-4 phrases.
         except Exception as e:
             self.logger.warning(f"Erreur lors de l'extraction des mots-clés avec LLM: {str(e)}")
             return None
+    
+    def _get_project_charter_from_rag(self) -> Optional[str]:
+        """
+        CYCLE COGNITIF HYBRIDE - Récupération du Project Charter
+        Recherche spécifiquement le Project Charter du projet dans le RAG avec métadonnées preserve=True.
+        
+        Returns:
+            str: Contenu du Project Charter ou None si non trouvé
+        """
+        # PRIORITÉ 1: Récupération directe depuis le superviseur
+        if hasattr(self, 'supervisor') and self.supervisor and hasattr(self.supervisor, 'project_charter'):
+            charter = self.supervisor.project_charter
+            if charter and len(charter) > 50:  # Validation minimale
+                self.logger.info("Project Charter récupéré directement depuis le superviseur")
+                return charter
+        
+        # PRIORITÉ 2: Lecture du fichier persistant
+        try:
+            charter_path = Path("projects") / self.project_name / "docs" / "PROJECT_CHARTER.md"
+            if charter_path.exists():
+                charter = charter_path.read_text(encoding='utf-8')
+                if charter and len(charter) > 50:
+                    self.logger.info(f"Project Charter récupéré depuis le fichier: {charter_path}")
+                    return charter
+        except Exception as e:
+            self.logger.warning(f"Erreur lecture fichier Project Charter: {e}")
+        
+        # PRIORITÉ 3: Recherche dans le RAG si pas trouvé ailleurs
+        if not self.rag_engine:
+            self.logger.error("PROJET COMPROMIS: Aucune source de Project Charter disponible")
+            raise RuntimeError(f"PROJET COMPROMIS: Aucun Project Charter trouvé pour {self.project_name}")
+        
+        try:
+            # Recherche spécifique du Project Charter avec plusieurs stratégies
+            charter_queries = [
+                f"Project Charter {self.project_name}",
+                "Project Charter Objectifs Contraintes",
+                "Charter projet objectifs livrables",
+                "projet objectifs contraintes critères succès"
+            ]
+            
+            best_charter = None
+            best_score = 0
+            
+            for query in charter_queries:
+                results = self.rag_engine.search(query, top_k=3)
+                
+                for result in results:
+                    score = result.get('score', 0)
+                    content = result.get('chunk_text', '')
+                    source = result.get('source', '')
+                    
+                    # Validation heuristique du contenu Charter
+                    charter_indicators = [
+                        'objectifs', 'contraintes', 'livrables', 'critères',
+                        'project charter', 'charter', 'projet'
+                    ]
+                    
+                    content_lower = content.lower()
+                    indicator_count = sum(1 for indicator in charter_indicators 
+                                        if indicator in content_lower)
+                    
+                    # Score combiné : similarité + indicateurs de contenu
+                    combined_score = score + (indicator_count * 0.1)
+                    
+                    if combined_score > best_score and len(content) > 100:
+                        best_charter = content
+                        best_score = combined_score
+                        self.logger.debug(f"Charter candidat trouvé - Score: {combined_score:.2f}, Source: {source}")
+            
+            if best_charter:
+                self.logger.info(f"Project Charter récupéré depuis RAG avec score {best_score:.2f}")
+                return best_charter
+            else:
+                # ÉCHEC CRITIQUE - Pas de fallback
+                self.logger.error("PROJET COMPROMIS: Aucun Project Charter trouvé dans toutes les sources")
+                raise RuntimeError(f"PROJET COMPROMIS: Aucun Project Charter valide trouvé pour {self.project_name}")
+                
+        except RuntimeError:
+            # Re-raise les erreurs critiques
+            raise
+        except Exception as e:
+            self.logger.error(f"PROJET COMPROMIS: Erreur lors de la récupération du Project Charter: {str(e)}")
+            raise RuntimeError(f"PROJET COMPROMIS: Échec de récupération du Project Charter pour {self.project_name}")
     
     def generate_json_with_context(self, prompt: str, **kwargs) -> Dict[str, Any]:
         """Génère une réponse JSON."""

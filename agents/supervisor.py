@@ -44,7 +44,9 @@ class Supervisor(BaseAgent):
         )
         
         self.project_prompt = project_prompt
-        self.rag_singleton = RAGEngine(project_name=self.project_name)
+       
+        # RAG singleton pour les agents
+        self.rag_singleton = rag_engine
         
         # Gestion des jalons et agents
         self.milestones = []
@@ -219,6 +221,18 @@ class Supervisor(BaseAgent):
         
         project_prompt = task.get('prompt', self.project_prompt)
         
+        # === LOGIQUE CONDITIONNELLE ===
+        is_initial_planning = not self.milestones
+        
+        # Choisir la méthode de génération appropriée
+        if is_initial_planning:
+            self.logger.info("Détection de la planification initiale. Utilisation du mode de génération simplifié.")
+            generate = self._generate_pure
+        else:
+            self.logger.info("Détection d'une ré-analyse. Utilisation du mode de génération complet avec RAG.")
+            generate = self.generate_with_context
+        # ==============================
+        
         # Prompt pour analyser et découper le projet
         analysis_prompt = f"""Tu es {self.name}, {self.role}.
 
@@ -238,14 +252,78 @@ Réponds avec une analyse structurée et un plan de jalons clair.
 """
         
         try:
-            # Générer l'analyse
-            analysis = self.generate_with_context(
+            # Utilise la méthode de génération choisie (avec ou sans RAG)
+            analysis = generate(
                 prompt=analysis_prompt,
                 temperature=0.6
             )
             
+            # PHASE 1: Création du Project Charter
+            self.logger.info("Création du Project Charter...")
+            charter_prompt = f"""Synthétise la demande suivante en un 'Project Charter' concis et structuré:
+
+PROJET: {project_prompt}
+
+Format requis:
+## Objectifs
+- [Objectif principal]
+- [Objectifs secondaires]
+
+## Contraintes
+- [Contraintes techniques]
+- [Contraintes de temps/ressources]
+
+## Livrables Clés
+- [Livrable 1]
+- [Livrable 2]
+- [...]
+
+## Critères de Succès
+- [Critère 1]
+- [Critère 2]
+
+Sois concis, factuel et précis."""
+            
+            try:
+                # Utiliser la même logique conditionnelle pour le Charter
+                project_charter_content = generate(
+                    prompt=charter_prompt,
+                    temperature=0.2  # Température basse pour synthèse factuelle
+                )
+                
+                # Stocker en attribut pour accès direct
+                self.project_charter = project_charter_content
+                
+                # Sauvegarder en fichier pour persistance
+                charter_path = Path("projects") / self.project_name / "docs" / "PROJECT_CHARTER.md"
+                charter_path.parent.mkdir(parents=True, exist_ok=True)
+                charter_path.write_text(project_charter_content, encoding='utf-8')
+                self.logger.info(f"Project Charter sauvegardé: {charter_path}")
+                
+                # Indexation prioritaire et permanente dans le RAG
+                if self.rag_engine:
+                    self.rag_engine.index_document(
+                        content=project_charter_content,
+                        metadata={
+                            'type': 'project_charter',
+                            'preserve': True,  # Instruction pour le CompressionManager
+                            'priority': 'critical',
+                            'project_name': self.project_name,
+                            'source': 'supervisor_initialization',
+                            'created_at': datetime.now().isoformat(),
+                            'version': '1.0'
+                        }
+                    )
+                    self.logger.info("Project Charter indexé avec succès dans le RAG")
+                else:
+                    self.logger.warning("RAG non disponible, Project Charter stocké en mémoire uniquement")
+                    
+            except Exception as e:
+                self.logger.error(f"ÉCHEC CRITIQUE: Impossible de créer le Project Charter: {e}")
+                raise RuntimeError(f"PROJET COMPROMIS: Échec de création du Project Charter pour {self.project_name}")
+            
             # Créer les jalons basés sur l'analyse
-            milestones = self._create_milestones_from_analysis(analysis, project_prompt)
+            milestones = self._create_milestones_from_analysis(analysis, project_prompt, use_pure_generation=is_initial_planning)
             
             plan = {
                 'task_id': 'supervisor_planning',
@@ -360,23 +438,12 @@ Réponds avec une analyse structurée et un plan de jalons clair.
                 milestone_result = self._execute_milestone(milestone)
                 orchestration_result['milestones_results'].append(milestone_result)
                 
-                # Bilan et journalisation du jalon terminé
-                self.logger.info(f"Bilan du jalon {milestone['id']}...")
-                summary = self._generate_milestone_summary(milestone_result)
-                self._create_journal_entry(
-                    'milestone_completed',
-                    summary,
-                    {
-                        'milestone_name': milestone['name'],
-                        'agents': milestone['agents_required'],
-                        'artifacts': [artifact for task in milestone_result.get('tasks_completed', []) for artifact in task.get('artifacts', [])]
-                    }
-                )
+                # PHASE 2: Vérification intelligente du jalon
+                self.logger.info(f"Vérification du jalon {milestone['id']}...")
+                verification_decision = self._verify_milestone_completion(milestone, milestone_result)
                 
-                # Mise à jour de l'état et passage au suivant
-                self.current_milestone_index += 1
-                self.project_state['milestones_completed'] += 1
-                milestone['status'] = 'completed'
+                # PHASE 3: Application de la décision de vérification
+                self._apply_verification_decision(verification_decision, milestone)
 
                 # Pause stratégique entre jalons
                 if self.current_milestone_index < len(self.milestones):
@@ -396,6 +463,69 @@ Réponds avec une analyse structurée et un plan de jalons clair.
         
         return orchestration_result
     
+    def _generate_pure(self, prompt: str, **kwargs) -> str:
+        """
+        Effectue un appel LLM direct sans injection de contexte RAG.
+        À utiliser uniquement pour la planification initiale.
+        """
+        self.logger.info("Exécution d'une génération LLM 'pure' (sans RAG) pour la planification.")
+        llm = LLMFactory.create(model=self.llm_config['model'])
+        
+        agent_context = {
+            'agent_name': self.name,
+            'task_id': self.state.get('current_task_id'),
+            'project_name': self.project_name,
+            'agent_role': self.role
+        }
+        
+        # Fusion des configurations : kwargs > config de l'agent
+        # Exclure 'model' car déjà passé à LLMFactory.create()
+        final_params = {k: v for k, v in self.llm_config.items() if k != 'model'}
+        final_params.update(kwargs)
+        
+        messages = [{"role": "user", "content": prompt}]
+        
+        response = llm.generate_with_messages(
+            messages=messages, 
+            agent_context=agent_context, 
+            **final_params
+        )
+        
+        # Correction robuste: gérer le format de réponse structuré du modèle magistral
+        if isinstance(response, list):
+            # Extraire le contenu "text" de la réponse structurée
+            text_content = None
+            for item in response:
+                if isinstance(item, str) and item.startswith('text="'):
+                    # Format: text="contenu réel..."
+                    text_content = item[6:]  # Enlever 'text="'
+                    if text_content.endswith('"'):
+                        text_content = text_content[:-1]  # Enlever '"' final
+                    break
+                elif isinstance(item, str) and 'text=' in item:
+                    # Autre format possible
+                    text_start = item.find('text="') + 6
+                    text_end = item.rfind('"')
+                    if text_start > 5 and text_end > text_start:
+                        text_content = item[text_start:text_end]
+                        break
+                elif hasattr(item, 'text'):
+                    # Format objet avec attribut text
+                    text_content = item.text
+                    break
+            
+            if text_content:
+                response = text_content
+                self.logger.info(f"Réponse pure structurée extraite: {len(response)} caractères")
+            else:
+                # Fallback: joindre tous les éléments
+                response = '\n'.join(str(item) for item in response)
+                self.logger.warning(f"Réponse pure liste non structurée, jointure: {len(response)} caractères")
+        elif not isinstance(response, str):
+            # Forcer la conversion en chaîne pour tous les autres types
+            response = str(response)
+        
+        return response
 
 
 
@@ -456,7 +586,7 @@ Réponds avec une analyse structurée et un plan de jalons clair.
         
         return result
     
-    def _create_milestones_from_analysis(self, analysis: str, project_prompt: str) -> List[Dict[str, Any]]:
+    def _create_milestones_from_analysis(self, analysis: str, project_prompt: str, use_pure_generation: bool = False) -> List[Dict[str, Any]]:
         """Crée les jalons à partir de l'analyse."""
         # Prompt pour créer les jalons structurés
         milestone_prompt = f"""Basé sur cette analyse:
@@ -481,10 +611,23 @@ Réponds uniquement avec un JSON valide:
 """
         
         try:
-            response = self.generate_json_with_context(
-                prompt=milestone_prompt,
-                temperature=0.5
-            )
+            if use_pure_generation:
+                # Appel direct et pur pour le JSON
+                json_prompt = f"{milestone_prompt}\n\nRéponds uniquement avec un JSON valide."
+                raw_response = self._generate_pure(prompt=json_prompt, temperature=0.5, max_tokens=2048)
+                # Nettoyage manuel du JSON
+                cleaned = raw_response.strip()
+                if cleaned.startswith("```json"):
+                    cleaned = cleaned[7:]
+                if cleaned.endswith("```"):
+                    cleaned = cleaned[:-3]
+                response = json.loads(cleaned.strip())
+            else:
+                # Utilise la méthode standard avec RAG pour la ré-analyse
+                response = self.generate_json_with_context(
+                    prompt=milestone_prompt,
+                    temperature=0.5
+                )
             
             milestones = response.get('milestones', [])
             
@@ -1101,3 +1244,271 @@ Maximum 200 mots, style professionnel."""
         except Exception as e:
             self.logger.error(f"Erreur lors de la génération du résumé de jalon: {str(e)}")
             return f"Jalon {milestone_result.get('milestone_name', 'Unknown')} terminé avec {len(milestone_result.get('tasks_completed', []))} tâches."
+    
+    def _get_project_charter(self) -> str:
+        """
+        PHASE 2: Récupère le Project Charter depuis la mémoire ou le RAG.
+        """
+        # Accès direct si disponible
+        if hasattr(self, 'project_charter') and self.project_charter:
+            return self.project_charter
+        
+        # Fallback: recherche dans RAG
+        if self.rag_engine:
+            try:
+                charter_results = self.rag_engine.search(
+                    "project charter objectives constraints deliverables",
+                    top_k=1,
+                    filter_metadata={'type': 'project_charter'}
+                )
+                if charter_results:
+                    self.logger.info("Project Charter récupéré depuis le RAG")
+                    return charter_results[0].get('chunk_text', '')
+            except Exception as e:
+                self.logger.warning(f"Erreur récupération Project Charter depuis RAG: {e}")
+        
+        # Dernier recours: prompt original
+        self.logger.warning("Project Charter non trouvé, utilisation du prompt original")
+        return f"## Objectifs\n{self.project_prompt}\n\n## Contraintes\nNon spécifiées\n\n## Livrables\nÀ définir"
+    
+    def _verify_milestone_completion(self, milestone: Dict[str, Any], milestone_result: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        PHASE 2: Vérification intelligente d'un jalon terminé.
+        """
+        try:
+            # Collecter les rapports structurés des agents
+            structured_reports = []
+            for task in milestone_result.get('tasks_completed', []):
+                if 'result' in task and 'structured_report' in task['result']:
+                    structured_reports.append(task['result']['structured_report'])
+            
+            # Évaluation rapide basée sur les auto-évaluations
+            if structured_reports:
+                compliant_reports = [r for r in structured_reports if r.get('self_assessment') == 'compliant']
+                partial_reports = [r for r in structured_reports if r.get('self_assessment') == 'partial']
+                failed_reports = [r for r in structured_reports if r.get('self_assessment') == 'failed']
+                
+                # Logique de décision rapide
+                if len(compliant_reports) == len(structured_reports):
+                    # Tous les agents sont conformes
+                    self.logger.info("Validation rapide réussie: tous les rapports sont conformes")
+                    return {
+                        'decision': 'approve',
+                        'reason': f'Tous les agents ({len(compliant_reports)}) rapportent une conformité complète',
+                        'confidence': 0.9,
+                        'evaluation_type': 'fast'
+                    }
+                elif failed_reports:
+                    # Au moins un échec critique
+                    self.logger.warning(f"Validation rapide détecte {len(failed_reports)} échec(s) critique(s)")
+                    # Passer à l'évaluation approfondie
+                    return self._deep_milestone_evaluation(milestone, milestone_result, structured_reports)
+                elif partial_reports:
+                    # Succès partiels - évaluation nuancée
+                    self.logger.info(f"Validation rapide détecte {len(partial_reports)} succès partiels")
+                    return self._deep_milestone_evaluation(milestone, milestone_result, structured_reports)
+            
+            # Pas de rapports structurés ou cas ambigus - évaluation approfondie
+            self.logger.warning("Pas de rapports structurés fiables, lancement évaluation approfondie")
+            return self._deep_milestone_evaluation(milestone, milestone_result, structured_reports)
+            
+        except Exception as e:
+            self.logger.error(f"Erreur vérification jalon: {e}")
+            # En cas d'erreur, approuver pour continuer
+            return {
+                'decision': 'approve',
+                'reason': f'Erreur lors de la vérification: {e}',
+                'confidence': 0.1,
+                'evaluation_type': 'error_fallback'
+            }
+    
+    def _deep_milestone_evaluation(self, milestone: Dict[str, Any], milestone_result: Dict[str, Any], 
+                                  structured_reports: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        PHASE 2: Évaluation approfondie utilisant le Project Charter et l'IA.
+        """
+        try:
+            # Récupérer le Project Charter
+            project_charter = self._get_project_charter()
+            
+            # Construire le contexte pour l'évaluation
+            evaluation_context = f"""
+PROJECT CHARTER:
+{project_charter}
+
+JALON ÉVALUÉ: {milestone['name']}
+Description: {milestone['description']}
+Livrables attendus: {', '.join(milestone.get('deliverables', []))}
+
+RÉSULTATS OBTENUS:
+Agents impliqués: {', '.join(milestone_result.get('agents_involved', []))}
+Artefacts créés: {len([artifact for task in milestone_result.get('tasks_completed', []) for artifact in task.get('artifacts', [])])}
+
+RAPPORTS D'AUTO-ÉVALUATION:
+"""
+            for report in structured_reports:
+                evaluation_context += f"- Agent {report.get('agent_name', 'unknown')}: {report.get('self_assessment', 'unknown')} (confiance: {report.get('confidence_level', 0):.1f})\n"
+                if report.get('issues_encountered'):
+                    evaluation_context += f"  Problèmes: {'; '.join(report['issues_encountered'])}\n"
+            
+            # Prompt d'évaluation intelligente
+            evaluation_prompt = f"""Tu es le superviseur du projet. Évalue si ce jalon respecte les objectifs du Project Charter.
+
+{evaluation_context}
+
+Analyse:
+1. Les livrables attendus sont-ils créés selon le Charter?
+2. Y a-t-il des déviations par rapport aux objectifs?
+3. Les problèmes rencontrés compromettent-ils la suite?
+
+Réponds avec un JSON:
+{{
+    "decision": "approve|request_rework|adjust_plan",
+    "reason": "explication détaillée",
+    "confidence": 0.0-1.0,
+    "recommended_action": "action spécifique si nécessaire"
+}}"""
+            
+            # Génération de l'évaluation
+            evaluation_response = self.generate_json_with_context(
+                prompt=evaluation_prompt,
+                temperature=0.4
+            )
+            
+            # Validation et enrichissement de la réponse
+            decision = evaluation_response.get('decision', 'approve')
+            if decision not in ['approve', 'request_rework', 'adjust_plan']:
+                decision = 'approve'  # Sécurité
+            
+            result = {
+                'decision': decision,
+                'reason': evaluation_response.get('reason', 'Évaluation IA complétée'),
+                'confidence': max(0.0, min(1.0, evaluation_response.get('confidence', 0.5))),
+                'evaluation_type': 'deep_ai',
+                'recommended_action': evaluation_response.get('recommended_action', ''),
+                'charter_compliance': 'evaluated'
+            }
+            
+            self.logger.info(f"Évaluation approfondie terminée: {decision} (confiance: {result['confidence']:.2f})")
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Erreur évaluation approfondie: {e}")
+            # Fallback conservateur
+            return {
+                'decision': 'approve',
+                'reason': f'Erreur évaluation approfondie: {e}',
+                'confidence': 0.2,
+                'evaluation_type': 'error_fallback'
+            }
+    
+    def _apply_verification_decision(self, verification: Dict[str, Any], current_milestone: Dict[str, Any]) -> None:
+        """
+        PHASE 3: Applique la décision de vérification en utilisant les outils existants.
+        """
+        decision = verification.get('decision', 'approve')
+        reason = verification.get('reason', 'Aucune raison spécifiée')
+        confidence = verification.get('confidence', 0.5)
+        
+        # Marquer le milestone avec les informations de vérification
+        current_milestone['verification_status'] = decision
+        current_milestone['verification_timestamp'] = datetime.now().isoformat()
+        current_milestone['verification_confidence'] = confidence
+        
+        # Gestion des tentatives de correction pour éviter boucles infinites
+        correction_count = current_milestone.get('correction_attempts', 0)
+        max_corrections = 3
+        
+        if decision == 'approve':
+            # Jalon approuvé - continuer normalement
+            self.logger.info(f"Jalon '{current_milestone['name']}' approuvé (confiance: {confidence:.2f})")
+            
+            # Journalisation de l'approbation
+            self._create_journal_entry(
+                'milestone_approved',
+                reason,
+                {
+                    'milestone_name': current_milestone['name'],
+                    'confidence': confidence,
+                    'evaluation_type': verification.get('evaluation_type', 'unknown')
+                }
+            )
+            
+            # Avancer au jalon suivant
+            self.current_milestone_index += 1
+            self.project_state['milestones_completed'] += 1
+            current_milestone['status'] = 'completed'
+            
+        elif decision == 'request_rework' and correction_count < max_corrections:
+            # Demande de correction
+            self.logger.warning(f"Correction requise pour '{current_milestone['name']}' (tentative {correction_count + 1}/{max_corrections})")
+            
+            # Incrémenter le compteur de corrections
+            current_milestone['correction_attempts'] = correction_count + 1
+            
+            # Ajouter un jalon de correction via l'outil existant
+            correction_result = self._tool_add_milestone({
+                'after_milestone_id': current_milestone['id'],
+                'name': f"Correction: {current_milestone['name']}",
+                'description': f"Action corrective requise: {reason}",
+                'agents_required': current_milestone['agents_required'],
+                'deliverables': ["Rapport de correction", "Artifacts corrigés"]
+            })
+            
+            if correction_result.status == 'success':
+                self.logger.info("Jalon de correction ajouté avec succès")
+                # NE PAS incrémenter current_milestone_index - le prochain jalon sera la correction
+            else:
+                self.logger.error(f"Échec ajout jalon correction: {correction_result.error}")
+                # Forcer l'approbation en cas d'échec
+                self._force_milestone_approval(current_milestone, "Échec ajout correction")
+            
+        elif decision == 'request_rework' and correction_count >= max_corrections:
+            # Trop de tentatives de correction - forcer l'approbation
+            self.logger.error(f"Trop de tentatives de correction ({correction_count}), approbation forcée")
+            self._force_milestone_approval(current_milestone, f"Limite de corrections atteinte ({max_corrections})")
+            
+        elif decision == 'adjust_plan':
+            # Ajustement du plan - modifier un jalon futur
+            self.logger.info(f"Ajustement du plan requis suite au jalon '{current_milestone['name']}'")
+            
+            # Pour l'instant, approuver le jalon actuel et logger l'ajustement
+            # L'implémentation complète nécessiterait une logique plus complexe
+            self._create_journal_entry(
+                'plan_adjustment_needed',
+                f"Ajustement requis: {reason}",
+                {
+                    'milestone_name': current_milestone['name'],
+                    'recommended_action': verification.get('recommended_action', ''),
+                    'confidence': confidence
+                }
+            )
+            
+            # Approuver et continuer
+            self._force_milestone_approval(current_milestone, f"Plan ajusté: {reason}")
+            
+        else:
+            # Cas non géré - approuver par défaut
+            self.logger.warning(f"Décision non reconnue '{decision}', approbation par défaut")
+            self._force_milestone_approval(current_milestone, f"Décision inconnue: {decision}")
+    
+    def _force_milestone_approval(self, milestone: Dict[str, Any], reason: str) -> None:
+        """
+        PHASE 3: Force l'approbation d'un jalon et continue l'orchestration.
+        """
+        self.logger.info(f"Approbation forcée du jalon '{milestone['name']}': {reason}")
+        
+        # Journaliser l'approbation forcée
+        self._create_journal_entry(
+            'milestone_forced_approval',
+            reason,
+            {'milestone_name': milestone['name']}
+        )
+        
+        # Marquer comme complété et avancer
+        milestone['status'] = 'completed'
+        milestone['forced_approval'] = True
+        milestone['forced_approval_reason'] = reason
+        
+        self.current_milestone_index += 1
+        self.project_state['milestones_completed'] += 1

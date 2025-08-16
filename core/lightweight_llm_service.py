@@ -151,6 +151,127 @@ Résumé structuré:'''
         except Exception as e:
             self.logger.error(f"Erreur résumé contexte: {str(e)}")
             return context  # Fallback vers contexte original
+    
+    def summarize_conversation(self, conversation_text: str) -> str:
+        """
+        Résume un historique de conversation multi-agents pour compression mémoire.
+        
+        Args:
+            conversation_text: Historique de conversation à compresser
+            
+        Returns:
+            str: Conversation résumée, ou conversation originale si pas besoin/service désactivé
+        """
+        if not self.summary_enabled:
+            return conversation_text
+        
+        # Vérifier que la conversation n'est pas vide
+        if not conversation_text or len(conversation_text) < 100:
+            return conversation_text
+        
+        # Tronquer si dépasse la limite d'entrée
+        context_truncated = conversation_text[:self.summary_max_input] if len(conversation_text) > self.summary_max_input else conversation_text
+        
+        conversation_prompt = f'''Résume cette conversation multi-agents en préservant les informations techniques essentielles pour la continuité du développement.
+
+Conversation à résumer:
+{context_truncated}
+
+Instructions de compression équilibrée:
+- GARDE ABSOLUMENT: spécifications techniques, schémas de données, noms de colonnes, formats JSON, API endpoints, contraintes projet
+- Garde aussi: décisions prises, jalons approuvés, fichiers créés/modifiés, problèmes résolus, découvertes importantes
+- Supprime: détails de debugging, répétitions, échanges de validation routine, thinking blocks verbeux
+- Format: puces détaillées avec contexte technique préservé
+- Maximum {self.summary_max_output // 1.5} caractères (compression modérée)
+- PRIORITÉ ABSOLUE: préserver tous les détails techniques, schémas, formats de données, contraintes
+
+Résumé technique détaillé:'''
+
+        try:
+            llm = LLMFactory.create(model=self.summary_model)
+            
+            result = llm.generate(
+                prompt=conversation_prompt,
+                max_tokens=self.summary_max_output // 3,  # Compression modérée (vs //6)
+                temperature=0.2  # Légèrement plus créatif pour préserver détails
+            )
+            
+            summary = result.strip()
+            
+            # Validation moins stricte pour préserver plus de contenu
+            if len(summary) < 100:
+                self.logger.warning("Résumé conversation trop court, utilisation original")
+                return conversation_text
+            
+            self.logger.debug(f"Conversation résumée: {len(conversation_text)} -> {len(summary)} caractères")
+            return summary
+            
+        except Exception as e:
+            self.logger.error(f"Erreur résumé conversation: {str(e)}")
+            return conversation_text  # Fallback vers conversation originale
+    
+    def summarize_constraints(self, project_charter: str, task_description: str) -> str:
+        """
+        CYCLE COGNITIF HYBRIDE - Phase d'Alignement
+        Extrait les contraintes critiques du Project Charter pour une tâche spécifique.
+        
+        Args:
+            project_charter: Contenu du Project Charter complet
+            task_description: Description de la tâche spécifique à accomplir
+            
+        Returns:
+            str: 2-3 contraintes critiques ciblées pour la tâche
+        """
+        self.logger.debug(f"Génération contraintes avec modèle léger démarrée pour tâche: {task_description[:50]}...")
+        
+        if not self.keyword_enabled:
+            # Service désactivé - retour Charter tronqué
+            self.logger.info("LightweightLLM désactivé, utilisation Charter tronqué")
+            return f"Directive projet: {project_charter[:300]}..."
+        
+        if not project_charter or not task_description:
+            self.logger.warning("Project Charter ou tâche vide pour summarize_constraints")
+            return "Aucune directive de projet disponible."
+        
+        alignment_prompt = f"""Extrait les 2-3 contraintes les plus critiques du Project Charter suivant pour accomplir la tâche spécifique ci-dessous. Sois extrêmement concis.
+
+PROJECT CHARTER:
+{project_charter}
+
+TÂCHE SPÉCIFIQUE:
+{task_description}
+
+Instructions:
+- Identifie uniquement les contraintes CRITIQUES pour cette tâche
+- Maximum 3 points, format liste
+- Privilégie: domaine métier, stack technique, livrables clés
+- Ignore les détails généraux
+- RÉPONSE DIRECTE UNIQUEMENT: pas d'explication, juste les contraintes
+
+Contraintes critiques:"""
+        
+        try:
+            # Génération avec modèle léger et rapide
+            llm = LLMFactory.create(model=self.keyword_model)
+            result = llm.generate(
+                prompt=alignment_prompt,
+                max_tokens=100,  # Contraint pour rester concis
+                temperature=0.1   # Très factuel
+            )
+            
+            # Validation et nettoyage
+            constraints = result.strip()
+            if not constraints or len(constraints) > 500:
+                self.logger.warning(f"Résultat d'alignement invalide: '{constraints[:50]}...'")
+                return f"Directive projet: {project_charter[:200]}..."  # Fallback Charter tronqué
+            
+            # Validation basique : contenu généré valide
+            self.logger.debug(f"Contraintes alignées générées: {len(constraints)} caractères")
+            return constraints
+                
+        except Exception as e:
+            self.logger.error(f"Erreur phase d'alignement: {str(e)}")
+            return f"Directive projet: {project_charter[:200]}..."  # Fallback robuste
 
 
 # Instance globale partagée (singleton simple)
