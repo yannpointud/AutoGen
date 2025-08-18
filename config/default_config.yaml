@@ -7,11 +7,11 @@ general:
   max_retries: 3
   retry_delay: 5
   llm_timeout: 120  # Réduire le timeout pour éviter les blocages
-  conversation_memory_size: 5  # 5 de base
+  conversation_memory_size: 6  # correspond aux deux derniers echanges request+responses
   conversation_compression_threshold: 60000  #  Seuil en caractères pour déclencher la compression de l'historique 60000 moitié du max appel API
   max_tokens: 32768
   # Rate limiting global pour tous les appels API
-  api_rate_limit_interval: 2  # Secondes entre chaque appel API (tous fournisseurs confondus) - Augmenté pour cycle cognitif hybride
+  api_rate_limit_interval: 5  # Secondes entre chaque appel API (tous fournisseurs confondus) - Augmenté pour cycle cognitif hybride
 
 llm:
   default_model: "mistral-small-latest"
@@ -73,7 +73,7 @@ tools:
         javascript: jest
         typescript: jest
     create_document:
-      max_length: 10000
+      max_length: 15000
       default_format: markdown
     generate_architecture_diagrams:
       format: mermaid
@@ -136,6 +136,8 @@ agents:
       - "En cas de doute sur la pertinence ou la nécessité d'une tâche, consulter le SUPERVISEUR via send_message_to_agent('supervisor', 'question')"
       - "Valider que le code généré est prêt pour la production, pas pour un prototype"
       - "Préférer un code simple et fonctionnel à un code complexe mais incomplet"
+      - "OPTIMISATION JSON: Si le code d'un fichier dépasse 4000 caractères, diviser en plusieurs outils implement_code séparés ou utiliser des imports pour réduire la taille"
+      - "OPTIMISATION JSON: Privilégier des noms de fichiers courts et du code concis pour éviter les échecs de parsing JSON"
       - "RESPONSABILITÉ OUTIL create_project_file: Créer UNIQUEMENT les LIVRABLES FINAUX du projet (README, manifestes de dépendances, documentation utilisateur) en PHASE DE LIVRAISON. Ne pas créer les configs de standards d'équipe."
 
 
@@ -162,29 +164,29 @@ communication:
 
 rag:
   embedding_model: "mistral-embed"
-  chunk_size: 500
-  chunk_overlap: 50
-  top_k: 5
-  similarity_threshold: 0.65
-  compression_threshold: 0.8
-  max_vectors: 10000
+  chunk_size: 500                    # Taille de chaque chunk en caractères lors de l'indexation
+  chunk_overlap: 50                  # Chevauchement entre chunks consécutifs (préserve le contexte)
+  max_document_size: 50000           # Taille max d'un document indexé (50000÷500 = 100 chunks max)
+  top_k: 5                          # Nombre max de chunks retournés par recherche (utilisé partout)
+  similarity_threshold: 0.65         # Seuil de pertinence vectorielle (0-1, plus haut = plus strict)
+  compression_threshold: 0.8         # Seuil pour compression automatique de l'historique
+  max_vectors: 10000                # Limite du nombre total de vecteurs stockés
   
-  # Configuration de l'injection automatique de contexte
+  # Configuration de l'injection automatique de contexte dans les prompts
   auto_context_injection:
     enabled: true
-    max_context_length: 1500  # Réduire pour éviter les timeouts
-    max_results: 3            
-    cache_enabled: true       # Mise en cache des résultats par tâche
-    search_timeout: 10         # Timeout pour les recherches RAG (secondes)
+    max_context_length: 5000         # Total max de caractères injectés (réparti automatiquement entre top_k chunks)
+    cache_enabled: true              # Met en cache les résultats RAG pour éviter recherches répétées
+    search_timeout: 10               # Timeout pour les recherches vectorielles (secondes)
     
-    # Service LLM léger pour extraction intelligente de mots-clés
+    # Service LLM léger pour extraction intelligente de mots-clés de recherche
     keyword_extraction:
-      enabled: true           # Utiliser LLM léger 
-      model: "mistral-small-latest"  # Modèle léger et rapide
-      max_tokens: 30         # Très court pour les mots-clés
-      temperature: 0.1       # Très déterministe
-      cache_ttl: 600         # Cache 10min (mots-clés stables)
-      timeout: 10            # Timeout rapide
+      enabled: true                    # Active l'extraction automatique de mots-clés depuis les prompts
+      model: "mistral-small-latest"    # Modèle LLM rapide et économique pour extraction
+      max_tokens: 30                   # Limite courte pour les mots-clés (économise tokens)
+      temperature: 0.1                 # Sortie déterministe et précise
+      cache_ttl: 600                   # Cache 10min (mots-clés stables dans une session)
+      timeout: 10                      # Timeout court pour extraction rapide
     
     # Résumé intelligent de contexte long
     context_summarization:
@@ -216,7 +218,7 @@ rag:
     - "tests et validation"
   
   min_confidence_score: 0.7
-  max_context_tokens: 2000
+  max_context_tokens: 3000
   auto_index_enabled: true
   auto_index_extensions: [".py", ".js", ".ts", ".java", ".md", ".json", ".yaml"]
   auto_index_folders: ["src", "docs"]

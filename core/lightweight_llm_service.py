@@ -220,7 +220,7 @@ Résumé technique détaillé:'''
             task_description: Description de la tâche spécifique à accomplir
             
         Returns:
-            str: 2-3 contraintes critiques ciblées pour la tâche
+            str: contraintes critiques ciblées pour la tâche
         """
         self.logger.debug(f"Génération contraintes avec modèle léger démarrée pour tâche: {task_description[:50]}...")
         
@@ -233,7 +233,7 @@ Résumé technique détaillé:'''
             self.logger.warning("Project Charter ou tâche vide pour summarize_constraints")
             return "Aucune directive de projet disponible."
         
-        alignment_prompt = f"""Extrait les 2-3 contraintes les plus critiques du Project Charter suivant pour accomplir la tâche spécifique ci-dessous. Sois extrêmement concis.
+        alignment_prompt = f"""Extrait les  contraintes du Project Charter suivant pour accomplir la tâche spécifique ci-dessous.
 
 PROJECT CHARTER:
 {project_charter}
@@ -255,14 +255,14 @@ Contraintes critiques:"""
             llm = LLMFactory.create(model=self.keyword_model)
             result = llm.generate(
                 prompt=alignment_prompt,
-                max_tokens=100,  # Contraint pour rester concis
+                max_tokens=800,  # Suffisant pour contraintes détaillées
                 temperature=0.1   # Très factuel
             )
             
             # Validation et nettoyage
             constraints = result.strip()
-            if not constraints or len(constraints) > 500:
-                self.logger.warning(f"Résultat d'alignement invalide: '{constraints[:50]}...'")
+            if not constraints:
+                self.logger.warning("Résultat d'alignement vide")
                 return f"Directive projet: {project_charter[:200]}..."  # Fallback Charter tronqué
             
             # Validation basique : contenu généré valide

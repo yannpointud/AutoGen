@@ -281,6 +281,7 @@ class RAGEngine:
         self.embedding_model_name = rag_config['embedding_model']
         self.chunk_size = rag_config['chunk_size']
         self.chunk_overlap = rag_config['chunk_overlap']
+        self.max_document_size = rag_config['max_document_size']
         self.top_k = rag_config['top_k']
         self.similarity_threshold = rag_config['similarity_threshold']
         
@@ -326,7 +327,7 @@ class RAGEngine:
         self._compression_pending = False
         self._indexing_active = False
 
-        self.logger.info(f"RAG Engine Phase 4.5 (corrigé) initialisé pour {project_name}")
+        self.logger.info(f"RAG Engine initialisé pour {project_name}")
 
     def _init_embedding_model(self):
         try:
@@ -491,15 +492,19 @@ class RAGEngine:
         if not chunks:
             return 0
         
-        # Limiter le nombre de chunks
-        max_chunks = 20
+        # Récupérer les métadonnées pour les logs et la détection
+        source = metadata.get('source', '')
+        folder = metadata.get('folder', '')
+        
+        # Limiter le nombre de chunks basé sur max_document_size
+        max_chunks = self.max_document_size // self.chunk_size
         if len(chunks) > max_chunks:
-            self.logger.warning(f"Document trop grand ({len(chunks)} chunks), limité à {max_chunks}")
+            total_chars = len(content)
+            truncated_chars = max_chunks * self.chunk_size
+            self.logger.warning(f"Document '{source}' tronqué: {total_chars} → {truncated_chars} caractères ({len(chunks)} → {max_chunks} chunks)")
             chunks = chunks[:max_chunks]
         
         # Détection automatique de préservation
-        source = metadata.get('source', '')
-        folder = metadata.get('folder', '')
         
         is_project_file = (
             source.startswith('src/') or 

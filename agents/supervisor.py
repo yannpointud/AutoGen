@@ -226,7 +226,7 @@ class Supervisor(BaseAgent):
         
         # Choisir la méthode de génération appropriée
         if is_initial_planning:
-            self.logger.info("Détection de la planification initiale. Utilisation du mode de génération simplifié.")
+            self.logger.info("Détection de la planification initiale. Génération sans RAG.")
             generate = self._generate_pure
         else:
             self.logger.info("Détection d'une ré-analyse. Utilisation du mode de génération complet avec RAG.")
@@ -260,29 +260,50 @@ Réponds avec une analyse structurée et un plan de jalons clair.
             
             # PHASE 1: Création du Project Charter
             self.logger.info("Création du Project Charter...")
-            charter_prompt = f"""Synthétise la demande suivante en un 'Project Charter' concis et structuré:
+            charter_prompt = f"""Transforme la demande suivante en Project Charter COMPLET en préservant TOUS les détails techniques critiques:
 
 PROJET: {project_prompt}
 
+INSTRUCTIONS CRITIQUES:
+- PRÉSERVE INTÉGRALEMENT: schémas de données, colonnes, formats, exemples JSON/XML, APIs endpoints...
+- GARDE tous les détails techniques: stack imposée, versions, configurations spécifiques...
+- INCLUS tous les exemples concrets fournis dans le prompt original
+- CONSERVE les spécifications métier précises sans simplification
+- FORMAT: structuré mais exhaustif (pas concis)
+
 Format requis:
 ## Objectifs
-- [Objectif principal]
-- [Objectifs secondaires]
+- [Objectif principal avec contexte métier]
+- [Objectifs secondaires détaillés]
 
-## Contraintes
-- [Contraintes techniques]
-- [Contraintes de temps/ressources]
+## Contraintes Techniques
+- [Stack technique imposée avec versions si spécifiées]
+- [Schémas de données COMPLETS avec types et exemples]
+- [Formats d'entrée/sortie avec exemples JSON/XML exacts]
+- [Autres contraintes techniques spécifiques...]
+
+## Contraintes Métier
+- [Domaine d'application et règles métier]
+- [Contraintes de temps/ressources/scope...]
+
+## Spécifications Détaillées
+- [Structures et formats de données avec détails exacts]
+- [Interfaces utilisateur, APIs, ou protocoles avec exemples complets]
+- [Architecture système, composants, et intégrations]
+- [Algorithmes, logiques métier, ou workflows spécifiques...]
 
 ## Livrables Clés
-- [Livrable 1]
-- [Livrable 2]
-- [...]
+- [Code source, modules, composants avec noms et structures]
+- [Interfaces, pages, endpoints, ou fonctionnalités exposées]
+- [Configurations, déploiements, et environnements]
+- [Documentation, tests, et outils de validation...]
 
-## Critères de Succès
-- [Critère 1]
-- [Critère 2]
+## Critères de Succès Mesurables
+- [Critères fonctionnels vérifiables]
+- [Critères techniques quantifiables]
+- [Critères de qualité et performance...]
 
-Sois concis, factuel et précis."""
+PRIORITÉ ABSOLUE: Aucun détail technique du prompt original ne doit être perdu ou simplifié."""
             
             try:
                 # Utiliser la même logique conditionnelle pour le Charter
@@ -291,32 +312,14 @@ Sois concis, factuel et précis."""
                     temperature=0.2  # Température basse pour synthèse factuelle
                 )
                 
-                # Stocker en attribut pour accès direct
-                self.project_charter = project_charter_content
-                
-                # Sauvegarder en fichier pour persistance
+                # Sauvegarder uniquement en fichier (source unique de vérité)
                 charter_path = Path("projects") / self.project_name / "docs" / "PROJECT_CHARTER.md"
                 charter_path.parent.mkdir(parents=True, exist_ok=True)
                 charter_path.write_text(project_charter_content, encoding='utf-8')
                 self.logger.info(f"Project Charter sauvegardé: {charter_path}")
                 
-                # Indexation prioritaire et permanente dans le RAG
-                if self.rag_engine:
-                    self.rag_engine.index_document(
-                        content=project_charter_content,
-                        metadata={
-                            'type': 'project_charter',
-                            'preserve': True,  # Instruction pour le CompressionManager
-                            'priority': 'critical',
-                            'project_name': self.project_name,
-                            'source': 'supervisor_initialization',
-                            'created_at': datetime.now().isoformat(),
-                            'version': '1.0'
-                        }
-                    )
-                    self.logger.info("Project Charter indexé avec succès dans le RAG")
-                else:
-                    self.logger.warning("RAG non disponible, Project Charter stocké en mémoire uniquement")
+                # Architecture unifiée : pas de stockage mémoire ni indexation RAG
+                self.logger.info("Project Charter disponible uniquement via fichier (architecture unifiée)")
                     
             except Exception as e:
                 self.logger.error(f"ÉCHEC CRITIQUE: Impossible de créer le Project Charter: {e}")
@@ -516,11 +519,11 @@ Sois concis, factuel et précis."""
             
             if text_content:
                 response = text_content
-                self.logger.info(f"Réponse pure structurée extraite: {len(response)} caractères")
+                self.logger.info(f"Réponse directe structurée extraite: {len(response)} caractères")
             else:
                 # Fallback: joindre tous les éléments
                 response = '\n'.join(str(item) for item in response)
-                self.logger.warning(f"Réponse pure liste non structurée, jointure: {len(response)} caractères")
+                self.logger.warning(f"Réponse directe liste non structurée, jointure: {len(response)} caractères")
         elif not isinstance(response, str):
             # Forcer la conversion en chaîne pour tous les autres types
             response = str(response)
@@ -589,8 +592,19 @@ Sois concis, factuel et précis."""
     def _create_milestones_from_analysis(self, analysis: str, project_prompt: str, use_pure_generation: bool = False) -> List[Dict[str, Any]]:
         """Crée les jalons à partir de l'analyse."""
         # Prompt pour créer les jalons structurés
-        milestone_prompt = f"""Basé sur cette analyse:
-{analysis[:1000]}
+        milestone_prompt = f"""Basé sur la demande initiale ET le Project Charter formalisé:
+
+--- DEMANDE INITIALE DE L'UTILISATEUR ---
+{project_prompt}
+--- FIN DE LA DEMANDE INITIALE ---
+
+--- PROJECT CHARTER FORMALISÉ ---
+{self._get_project_charter_from_file()}
+--- FIN DU PROJECT CHARTER ---
+
+--- ANALYSE INTERMÉDIAIRE ---
+{analysis}
+--- FIN DE L'ANALYSE ---
 
 Crée entre {self.min_milestones} et {self.max_milestones} jalons pour ce projet.
 
@@ -1245,31 +1259,26 @@ Maximum 200 mots, style professionnel."""
             self.logger.error(f"Erreur lors de la génération du résumé de jalon: {str(e)}")
             return f"Jalon {milestone_result.get('milestone_name', 'Unknown')} terminé avec {len(milestone_result.get('tasks_completed', []))} tâches."
     
-    def _get_project_charter(self) -> str:
+    def _get_project_charter_from_file(self) -> str:
         """
-        PHASE 2: Récupère le Project Charter depuis la mémoire ou le RAG.
+        Architecture unifiée: Récupère le Project Charter depuis le fichier uniquement.
+        Tous les agents (y compris Supervisor) fonctionnent de la même façon.
         """
-        # Accès direct si disponible
-        if hasattr(self, 'project_charter') and self.project_charter:
-            return self.project_charter
-        
-        # Fallback: recherche dans RAG
-        if self.rag_engine:
-            try:
-                charter_results = self.rag_engine.search(
-                    "project charter objectives constraints deliverables",
-                    top_k=1,
-                    filter_metadata={'type': 'project_charter'}
-                )
-                if charter_results:
-                    self.logger.info("Project Charter récupéré depuis le RAG")
-                    return charter_results[0].get('chunk_text', '')
-            except Exception as e:
-                self.logger.warning(f"Erreur récupération Project Charter depuis RAG: {e}")
-        
-        # Dernier recours: prompt original
-        self.logger.warning("Project Charter non trouvé, utilisation du prompt original")
-        return f"## Objectifs\n{self.project_prompt}\n\n## Contraintes\nNon spécifiées\n\n## Livrables\nÀ définir"
+        try:
+            charter_path = Path("projects") / self.project_name / "docs" / "PROJECT_CHARTER.md"
+            if charter_path.exists():
+                charter = charter_path.read_text(encoding='utf-8')
+                if charter and len(charter) > 50:
+                    self.logger.info(f"Project Charter récupéré depuis le fichier: {charter_path}")
+                    return charter
+                else:
+                    raise ValueError("Project Charter fichier vide ou trop court")
+            else:
+                raise FileNotFoundError(f"Project Charter non trouvé: {charter_path}")
+                
+        except Exception as e:
+            self.logger.error(f"PROJET COMPROMIS: Impossible de lire le Project Charter: {str(e)}")
+            raise RuntimeError(f"PROJET COMPROMIS: Project Charter inaccessible pour {self.project_name}: {str(e)}")
     
     def _verify_milestone_completion(self, milestone: Dict[str, Any], milestone_result: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -1303,12 +1312,23 @@ Maximum 200 mots, style professionnel."""
                     self.logger.warning(f"Validation rapide détecte {len(failed_reports)} échec(s) critique(s)")
                     # Passer à l'évaluation approfondie
                     return self._deep_milestone_evaluation(milestone, milestone_result, structured_reports)
-                elif partial_reports:
-                    # Succès partiels - évaluation nuancée
-                    self.logger.info(f"Validation rapide détecte {len(partial_reports)} succès partiels")
+                elif partial_reports or len(structured_reports) > 0:
+                    # Succès partiels ou rapports disponibles - évaluation nuancée
+                    self.logger.info(f"Validation avec {len(structured_reports)} rapports disponibles, {len(partial_reports)} succès partiels")
                     return self._deep_milestone_evaluation(milestone, milestone_result, structured_reports)
             
-            # Pas de rapports structurés ou cas ambigus - évaluation approfondie
+            # Vérifier si des agents ont terminé même sans rapports structurés
+            agents_completed = milestone_result.get('agents_completed', [])
+            if agents_completed:
+                self.logger.info(f"Agents terminés détectés: {agents_completed}, validation par résultats")
+                return {
+                    'decision': 'approve',
+                    'confidence': 0.8,
+                    'reason': f'Completion confirmée pour agents: {", ".join(agents_completed)}',
+                    'evaluation_type': 'agent_completion_based'
+                }
+            
+            # Cas vraiment ambigus - évaluation approfondie
             self.logger.warning("Pas de rapports structurés fiables, lancement évaluation approfondie")
             return self._deep_milestone_evaluation(milestone, milestone_result, structured_reports)
             
@@ -1329,7 +1349,7 @@ Maximum 200 mots, style professionnel."""
         """
         try:
             # Récupérer le Project Charter
-            project_charter = self._get_project_charter()
+            project_charter = self._get_project_charter_from_file()
             
             # Construire le contexte pour l'évaluation
             evaluation_context = f"""

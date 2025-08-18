@@ -128,7 +128,7 @@ class BaseAgent(ABC):
         # CYCLE COGNITIF HYBRIDE - Service léger pour phase d'alignement
         self.lightweight_service = get_lightweight_llm_service(self.project_name)
         
-        self.logger.info(f"Agent {name} initialisé avec architecture orientée outils + service léger")
+        self.logger.info(f"Agent {name} initialisé")
     
     def register_tool(self, tool: Tool, implementation: Callable) -> None:
         """Enregistre un nouvel outil."""
@@ -383,6 +383,7 @@ class BaseAgent(ABC):
         strategies = [
             self._strategy_direct_parse,
             self._strategy_fix_incomplete,
+            self._strategy_progressive_parse,  # Nouvelle stratégie pour code long
             self._strategy_extract_partial,
             self._strategy_documentation_rescue,  # Stratégie de récupération de documentation
             self._strategy_regex_fallback
@@ -433,6 +434,82 @@ class BaseAgent(ABC):
         content = re.sub(r',\s*([}\]])', r'\1', content)
         
         return self._strategy_direct_parse(content)
+    
+    def _strategy_progressive_parse(self, json_content: str) -> List[Dict[str, Any]]:
+        """
+        STRATÉGIE 3: Parsing progressif pour code long.
+        Parse chaque outil individuellement pour éviter les échecs sur gros JSON.
+        """
+        import re
+        tools = []
+        
+        # Pattern amélioré pour capturer chaque outil complet
+        tool_pattern = r'\{\s*"tool"\s*:\s*"([^"]+)"\s*,\s*"parameters"\s*:\s*(\{.*?\})\s*(?=\s*\}|\s*,|\s*\])'
+        
+        # Chercher tous les tools individuellement
+        matches = re.finditer(tool_pattern, json_content, re.DOTALL)
+        
+        for match in matches:
+            try:
+                tool_name = match.group(1)
+                params_block = match.group(2)
+                
+                # Parser les paramètres avec gestion d'erreur robuste
+                try:
+                    import json5
+                    parameters = json5.loads(params_block)
+                except:
+                    # Fallback: parsing JSON standard
+                    import json
+                    parameters = json.loads(params_block)
+                
+                tool_obj = {
+                    "tool": tool_name,
+                    "parameters": parameters
+                }
+                
+                tools.append(tool_obj)
+                self.logger.debug(f"Outil parsé progressivement: {tool_name}")
+                
+            except Exception as e:
+                self.logger.debug(f"Échec parsing outil individuel: {str(e)}")
+                continue
+        
+        # Si ça n'a pas marché, essayer une approche plus agressive pour gros code
+        if not tools:
+            # Pattern pour capturer de très gros blocs de code
+            large_tool_pattern = r'\{\s*"tool"\s*:\s*"([^"]+)"\s*,\s*"parameters"\s*:\s*\{[^{}]*"code"\s*:\s*"([^"]*(?:\\.[^"]*)*)"[^{}]*\}\s*\}'
+            
+            large_matches = re.finditer(large_tool_pattern, json_content, re.DOTALL)
+            for match in large_matches:
+                try:
+                    tool_name = match.group(1)
+                    # Reconstruire un objet simplifié pour implement_code
+                    if tool_name == "implement_code":
+                        # Extraire les paramètres essentiels
+                        filename_match = re.search(r'"filename"\s*:\s*"([^"]*)"', match.group(0))
+                        language_match = re.search(r'"language"\s*:\s*"([^"]*)"', match.group(0))
+                        code = match.group(2)
+                        
+                        if filename_match and language_match:
+                            parameters = {
+                                "filename": filename_match.group(1),
+                                "language": language_match.group(1),
+                                "code": code,
+                                "description": f"Code parsé progressivement pour {filename_match.group(1)}"
+                            }
+                            
+                            tools.append({
+                                "tool": tool_name,
+                                "parameters": parameters
+                            })
+                            self.logger.debug(f"Gros outil parsé: {tool_name} - {filename_match.group(1)}")
+                
+                except Exception as e:
+                    self.logger.debug(f"Échec parsing gros outil: {str(e)}")
+                    continue
+        
+        return tools
     
     def _strategy_extract_partial(self, json_content: str) -> List[Dict[str, Any]]:
         """Stratégie 3: Extraire les objets JSON complets même dans un document partiel."""
@@ -696,20 +773,17 @@ Continuer l'amélioration de la couverture de tests.
         cycle_start = time.time()
         
         try:
-            # ========== PHASE 1: ALIGNEMENT (Lightweight LLM) ==========
+            # ========== PHASE 1: ALIGNEMENT  ==========
             self.logger.info("🔄 Démarrage CYCLE COGNITIF HYBRIDE - Phase d'Alignement")
             alignment_start = time.time()
             
             # Récupérer le Project Charter depuis le RAG
-            project_charter = self._get_project_charter_from_rag()
+            project_charter = self._get_project_charter_from_file()
             
-            # Extraire les contraintes critiques pour cette tâche spécifique
+            # Utiliser le Project Charter complet au lieu d'un résumé
             if project_charter:
-                task_description = task.get('description', '')
-                critical_constraints = self.lightweight_service.summarize_constraints(
-                    project_charter, task_description
-                )
-                self.logger.debug(f"Contraintes extraites ({len(critical_constraints)} chars): {critical_constraints[:100]}...")
+                critical_constraints = project_charter
+                self.logger.debug(f"Project Charter complet transmis ({len(critical_constraints)} chars): {critical_constraints[:100]}...")
             else:
                 critical_constraints = f"ATTENTION: Aucun Project Charter trouvé pour {self.project_name}. Procéder avec prudence."
                 self.logger.warning("Project Charter non trouvé, contraintes par défaut appliquées")
@@ -736,14 +810,8 @@ Continuer l'amélioration de la couverture de tests.
 - Implémente TOUTE la logique demandée dans la tâche
 """
 
-            # Prompt enrichi avec contraintes du Project Charter
-            thinking_prompt = f"""Tu es {self.name}, {self.role}.
-Personnalité: {self.personality}
-
-🎯 CONTRAINTES CRITIQUES DU PROJET:
-{critical_constraints}
-
-📋 TÂCHE COURANTE:
+            # Architecture de prompt à deux niveaux - Charter séparé de l'historique
+            clean_prompt = f"""🎯 TA MISSION TACTIQUE:
 {task.get('description', '')}
 
 📦 LIVRABLES ATTENDUS: 
@@ -752,9 +820,6 @@ Personnalité: {self.personality}
 
 🛠️ OUTILS DISPONIBLES:
 {tools_description}
-
-📖 GUIDELINES:
-{chr(10).join(['- ' + g for g in self.guidelines])}
 
 ANALYSE cette tâche en gardant STRICTEMENT en tête les contraintes du projet:
 1. ALIGNEMENT: Cette tâche respecte-t-elle les contraintes critiques identifiées ?
@@ -767,17 +832,15 @@ ANALYSE cette tâche en gardant STRICTEMENT en tête les contraintes du projet:
 Réponds en texte libre, PAS en JSON. Sois concis mais précis.
 """
             
-            # Générer l'analyse avec contraintes intégrées
-            analysis = self.generate_with_context(
-                prompt=thinking_prompt,
+            # Générer l'analyse avec Charter injecté temporairement
+            analysis = self.generate_with_context_enriched(
+                clean_prompt=clean_prompt,
+                strategic_context=critical_constraints,
                 temperature=self.llm_config.get('temperature', 0.7)
             )
             
-            # Phase ACT avec contraintes rappelées
-            action_prompt = f"""🎯 RAPPEL DES CONTRAINTES CRITIQUES:
-{critical_constraints}
-
-Basé sur ton analyse précédente, maintenant AGIS avec les outils disponibles en RESPECTANT les contraintes.
+            # Phase ACT - faire confiance à la mémoire conversationnelle
+            action_prompt = f"""Basé sur l'analyse que tu viens de fournir, traduis ton plan en un JSON d'appels d'outils.
 
 Outils disponibles:
 {tools_description}
@@ -828,8 +891,9 @@ RÉPONDS UNIQUEMENT AVEC LE JSON, AUCUN TEXTE AVANT OU APRÈS.
 """
             
             # Générer les actions en JSON pur
-            actions_response = self.generate_with_context(
-                prompt=action_prompt,
+            actions_response = self.generate_with_context_enriched(
+                clean_prompt=action_prompt,
+                strategic_context=critical_constraints,  # Project Charter injecté
                 temperature=0.3,  # Plus bas pour JSON précis
                 max_tokens=4000
             )
@@ -934,6 +998,16 @@ RÉPONDS UNIQUEMENT AVEC LE JSON, AUCUN TEXTE AVANT OU APRÈS.
                         structured_report = self._generate_structured_report(plan, result)
                         result['structured_report'] = structured_report
                         self.logger.info(f"Rapport structuré généré: {structured_report.get('self_assessment', 'unknown')}")
+                        
+                        # AJOUT : Envoi systématique du rapport au supervisor
+                        try:
+                            self._tool_report_to_supervisor({
+                                'report_type': 'completion',
+                                'content': structured_report
+                            })
+                            self.logger.debug("Rapport structuré envoyé au supervisor")
+                        except Exception as e:
+                            self.logger.warning(f"Échec envoi rapport au supervisor: {e}")
 
             
         except Exception as e:
@@ -1044,8 +1118,9 @@ Maximum 3-4 phrases.
 """
         
         try:
-            response = self.generate_with_context(
-                prompt=response_prompt,
+            response = self.generate_with_context_enriched(
+                clean_prompt=response_prompt,
+                strategic_context=self._get_project_charter_from_file(),
                 temperature=0.6
             )
             return response
@@ -1127,21 +1202,47 @@ Maximum 3-4 phrases.
             return [{"role": m["role"], "content": m["content"]} 
                     for m in self.conversation_memory]
     
+    def get_agent_context(self) -> Dict[str, Any]:
+        """
+        Retourne le contexte de l'agent pour enrichir les logs LLM.
+        
+        Returns:
+            Dict contenant les informations contextuelles de l'agent
+        """
+        return {
+            'agent_name': self.name,
+            'agent_role': self.role,
+            'project_name': self.project_name,
+            'agent_type': self.__class__.__name__,
+            'current_milestone': getattr(self, 'current_milestone_id', None),
+            'task_id': self.state.get('current_task_id', None)
+        }
+    
     def generate_with_context(self, prompt: str, **kwargs) -> str:
         """Génère une réponse en utilisant l'historique conversationnel et le contexte RAG."""
         messages = self.get_conversation_context()
         
-        # NOUVEAU : Enrichir automatiquement avec contexte RAG intelligent
+        # NOUVEAU : Créer prompt système avec identité agent + guidelines
+        guidelines_text = '\n'.join(['- ' + g for g in self.guidelines]) if self.guidelines else ""
+        agent_system_prompt = f"""Tu es {self.name}, {self.role}.
+Personnalité: {self.personality}
+
+Guidelines comportementales:
+{guidelines_text}"""
+        system_message = {
+            "role": "system",
+            "content": agent_system_prompt
+        }
+        messages.insert(0, system_message)
+        
+        # Enrichir automatiquement avec contexte RAG intelligent dans le prompt user
         rag_context = self._get_smart_rag_context(prompt)
         if rag_context:
-            # Injecter comme message système au début de la conversation
-            system_message = {
-                "role": "system", 
-                "content": f"Contexte projet pertinent :\n{rag_context}"
-            }
-            messages.insert(0, system_message)
+            enriched_prompt = f"{prompt}\n\n--- CONTEXTE DYNAMIQUE PERTINENT (RAG) ---\n{rag_context}\n--- FIN CONTEXTE DYNAMIQUE ---"
+        else:
+            enriched_prompt = prompt
         
-        messages.append({"role": "user", "content": prompt})
+        messages.append({"role": "user", "content": enriched_prompt})
         
         # COMPRESSION INTELLIGENTE : Vérifier si le prompt total dépasse le seuil
         from config import default_config
@@ -1173,12 +1274,18 @@ Maximum 3-4 phrases.
                         
                         # Reconstruction : créer des messages compressés 
                         compressed_messages = []
-                        if rag_context:
-                            system_message = {
-                                "role": "system", 
-                                "content": f"Contexte projet pertinent :\n{rag_context}"
-                            }
-                            compressed_messages.append(system_message)
+                        # Ajouter le prompt système agent + guidelines
+                        guidelines_text = '\n'.join(['- ' + g for g in self.guidelines]) if self.guidelines else ""
+                        agent_system_prompt = f"""Tu es {self.name}, {self.role}.
+Personnalité: {self.personality}
+
+Guidelines comportementales:
+{guidelines_text}"""
+                        system_message = {
+                            "role": "system",
+                            "content": agent_system_prompt
+                        }
+                        compressed_messages.append(system_message)
                         
                         # Créer un message résumé qui remplace les anciens messages
                         if compressed_summary.strip():
@@ -1192,8 +1299,12 @@ Maximum 3-4 phrases.
                         for msg in short_term_memory:
                             compressed_messages.append({"role": msg["role"], "content": msg["content"]})
                         
-                        # Ajouter le nouveau prompt
-                        compressed_messages.append({"role": "user", "content": prompt})
+                        # Ajouter le nouveau prompt avec RAG si disponible
+                        if rag_context:
+                            final_prompt = f"{prompt}\n\n--- CONTEXTE DYNAMIQUE PERTINENT (RAG) ---\n{rag_context}\n--- FIN CONTEXTE DYNAMIQUE ---"
+                        else:
+                            final_prompt = prompt
+                        compressed_messages.append({"role": "user", "content": final_prompt})
                         
                         # Utiliser les messages compressés
                         messages = compressed_messages
@@ -1247,11 +1358,195 @@ Maximum 3-4 phrases.
                 # Fallback: joindre tous les éléments
                 response = '\n'.join(str(item) for item in response)
                 self.logger.warning(f"Réponse liste non structurée, jointure: {len(response)} caractères")
+        elif hasattr(response, 'text'):
+            # Format objet avec attribut text
+            response = response.text
+            self.logger.debug("Extraction text depuis objet réponse")
         elif not isinstance(response, str):
             # Forcer la conversion en chaîne pour tous les autres types
             response = str(response)
-            self.logger.warning(f"LLM a retourné un type inattendu {type(response)}, conversion en chaîne")
+            self.logger.warning(f"Type inattendu {type(response)}, conversion string")
         
+        self.add_message_to_memory("assistant", response)
+        
+        return response
+    
+    def _parse_json_from_llm_response(self, response: str) -> Dict[str, Any]:
+        """
+        Parse intelligent de JSON depuis réponses LLM (gère markdown et formats divers).
+        
+        Args:
+            response: Réponse LLM potentiellement contenant du JSON
+            
+        Returns:
+            Dict contenant le JSON parsé, ou dict vide si échec
+        """
+        import re
+        import json
+        
+        try:
+            # Nettoyer les blocs markdown JSON
+            if '```json' in response:
+                json_match = re.search(r'```json\s*(.*?)\s*```', response, re.DOTALL)
+                if json_match:
+                    json_content = json_match.group(1).strip()
+                    self.logger.debug("JSON extrait depuis bloc markdown")
+                    return json.loads(json_content)
+            
+            # Nettoyer les blocs markdown génériques
+            elif '```' in response:
+                json_match = re.search(r'```\s*(.*?)\s*```', response, re.DOTALL)
+                if json_match:
+                    json_content = json_match.group(1).strip()
+                    if json_content.startswith('{') or json_content.startswith('['):
+                        self.logger.debug("JSON extrait depuis bloc markdown générique")
+                        return json.loads(json_content)
+            
+            # Essayer de parser directement si ça ressemble à du JSON
+            response_clean = response.strip()
+            if response_clean.startswith('{') or response_clean.startswith('['):
+                self.logger.debug("JSON parsé directement")
+                return json.loads(response_clean)
+            
+            # Chercher du JSON intégré dans le texte
+            json_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
+            json_matches = re.findall(json_pattern, response)
+            if json_matches:
+                for match in json_matches:
+                    try:
+                        parsed = json.loads(match)
+                        self.logger.debug("JSON trouvé intégré dans le texte")
+                        return parsed
+                    except json.JSONDecodeError:
+                        continue
+            
+            self.logger.debug("Aucun JSON valide trouvé dans la réponse")
+            return {}
+            
+        except (json.JSONDecodeError, AttributeError, re.error) as e:
+            self.logger.warning(f"Échec parsing JSON: {e}")
+            return {}
+    
+    def generate_with_context_enriched(self, clean_prompt: str, strategic_context: str = None, **kwargs) -> str:
+        """
+        Génère une réponse en enrichissant temporairement avec contexte stratégique 
+        SANS polluer l'historique conversationnel.
+        
+        Args:
+            clean_prompt: Prompt "propre" sans Project Charter (pour l'historique)
+            strategic_context: Project Charter à injecter temporairement
+            **kwargs: Arguments pour generate_with_context
+            
+        Returns:
+            str: Réponse du LLM
+        """
+        # 1. Construire le prompt final enrichi (temporaire)
+        if strategic_context:
+            full_prompt = f"""{clean_prompt}
+
+--- CONTEXTE STRATÉGIQUE DE RÉFÉRENCE (PROJECT CHARTER) ---
+{strategic_context}
+--- FIN DU CONTEXTE STRATÉGIQUE ---"""
+        else:
+            full_prompt = clean_prompt
+        
+        # 2. Obtenir l'historique existant
+        messages = self.get_conversation_context()
+        
+        # 3. Ajouter le prompt système avec guidelines
+        guidelines_text = '\n'.join(['- ' + g for g in self.guidelines]) if self.guidelines else ""
+        agent_system_prompt = f"""Tu es {self.name}, {self.role}.
+Personnalité: {self.personality}
+
+Guidelines comportementales:
+{guidelines_text}"""
+        system_message = {
+            "role": "system",
+            "content": agent_system_prompt
+        }
+        messages.insert(0, system_message)
+        
+        # 4. Enrichir avec contexte RAG et ajouter le prompt final
+        rag_context = self._get_smart_rag_context(full_prompt)
+        if rag_context:
+            enriched_prompt = f"{full_prompt}\n\n--- CONTEXTE DYNAMIQUE PERTINENT (RAG) ---\n{rag_context}\n--- FIN CONTEXTE DYNAMIQUE ---"
+        else:
+            enriched_prompt = full_prompt
+            
+        messages.append({"role": "user", "content": enriched_prompt})
+        
+        # 5. Gérer la compression si nécessaire (même logique que generate_with_context)
+        from config import default_config
+        compression_threshold = default_config['general']['conversation_compression_threshold']
+        total_prompt_size = self._calculate_final_prompt_size(messages, None)
+        
+        if total_prompt_size > compression_threshold:
+            # Même logique de compression que dans generate_with_context
+            memory_size = default_config['general']['conversation_memory_size']
+            short_term_memory = list(self.conversation_memory)[-memory_size:] if len(self.conversation_memory) > memory_size else list(self.conversation_memory)
+            
+            if len(self.conversation_history) > memory_size:
+                history_to_compress = self.conversation_history[:-memory_size]
+                
+                if history_to_compress:
+                    old_text = "\n\n".join([
+                        f"[{msg.get('timestamp', '')}] {msg.get('role', '')}: {msg.get('content', '')}"
+                        for msg in history_to_compress
+                    ])
+                    
+                    try:
+                        compressed_summary = self.lightweight_service.summarize_conversation(old_text)
+                        
+                        compressed_messages = []
+                        # Système avec guidelines
+                        compressed_messages.append(system_message)
+                        
+                        # Résumé compressé
+                        if compressed_summary.strip():
+                            summary_message = {
+                                "role": "assistant", 
+                                "content": f"[Résumé des échanges précédents : {compressed_summary}]"
+                            }
+                            compressed_messages.append(summary_message)
+                        
+                        # Mémoire court terme
+                        for msg in short_term_memory:
+                            compressed_messages.append({"role": msg["role"], "content": msg["content"]})
+                        
+                        # Nouveau prompt enrichi
+                        compressed_messages.append({"role": "user", "content": enriched_prompt})
+                        
+                        messages = compressed_messages
+                        
+                        self.logger.info(f"⚡ Compression appliquée : {total_prompt_size} chars -> {self._calculate_final_prompt_size(messages, None)} chars (-{total_prompt_size - self._calculate_final_prompt_size(messages, None)})")
+                    except Exception as e:
+                        self.logger.warning(f"Échec de la compression, prompt non modifié: {str(e)}")
+        
+        # 6. Ajouter SEULEMENT le clean_prompt à l'historique (pas le full_prompt)
+        self.add_message_to_memory("user", clean_prompt)
+        
+        # 7. Appel LLM
+        llm = LLMFactory.create(model=self.llm_config['model'])
+        
+        try:
+            response = llm.generate_with_messages(
+                messages=messages, 
+                agent_context=self.get_agent_context(),
+                **{k: v for k, v in kwargs.items() if k not in ['prompt']}
+            )
+        except Exception as e:
+            self.logger.error(f"Erreur génération LLM: {str(e)}")
+            return f"Erreur lors de la génération: {str(e)}"
+        
+        if hasattr(response, 'text'):
+            # Format objet avec attribut text
+            response = response.text
+            self.logger.debug("Extraction text depuis objet réponse (context enriched)")
+        elif not isinstance(response, str):
+            response = str(response)
+            self.logger.warning(f"Type inattendu {type(response)}, conversion string (context enriched)")
+        
+        # 8. Ajouter la réponse à l'historique
         self.add_message_to_memory("assistant", response)
         
         return response
@@ -1298,14 +1593,10 @@ Maximum 3-4 phrases.
             return None
         
         # Ajouter une protection contre les prompts trop longs qui pourraient causer des timeouts
-        if len(prompt) > 10000:
-            self.logger.warning("Prompt trop long pour l'injection RAG, ignoré")
-            return None
         
         try:
             # Configuration depuis default_config.yaml
-            max_context_length = auto_context_config.get('max_context_length', 2000)
-            max_results = auto_context_config.get('max_results', 3)
+            max_context_length = auto_context_config.get('max_context_length', 5000)
             cache_enabled = auto_context_config.get('cache_enabled', True)
             
             # Cache pour éviter de chercher la même chose plusieurs fois dans la même tâche
@@ -1330,7 +1621,7 @@ Maximum 3-4 phrases.
             # Chercher dans RAG + mémoire de travail
             results = self.rag_engine.search(
                 search_query, 
-                top_k=max_results,
+                top_k=self.rag_engine.top_k,
                 include_working_memory=True
             )
             
@@ -1340,10 +1631,12 @@ Maximum 3-4 phrases.
                     self._rag_context_cache[cache_key] = result
                 return result
             
-            # Formater le contexte de manière concise
+            # Formater le contexte avec répartition équitable
             context_parts = []
             seen_sources = set()
-            current_length = 0
+            
+            # Calcul automatique : répartir l'espace disponible entre les chunks
+            chars_per_chunk = max_context_length // self.rag_engine.top_k if results else 0
             
             for result in results:
                 source = result.get('source', 'unknown')
@@ -1356,15 +1649,9 @@ Maximum 3-4 phrases.
                     continue
                 seen_sources.add(source)
                 
-                # Calculer la longueur du texte à tronquer en fonction de l'espace restant
-                remaining_space = max_context_length - current_length - 100  # Buffer de sécurité
-                if remaining_space <= 0:
-                    break  # Plus de place
-                
-                # Tronquer intelligemment le texte
-                max_text_length = min(300, remaining_space)  # Max 300 chars par résultat
-                if len(text) > max_text_length:
-                    text_summary = text[:max_text_length] + "..."
+                # Tronquer à la taille calculée automatiquement
+                if len(text) > chars_per_chunk:
+                    text_summary = text[:chars_per_chunk] + "..."
                 else:
                     text_summary = text
                 
@@ -1373,7 +1660,6 @@ Maximum 3-4 phrases.
                 part = f"{prefix} {source} (score: {score:.2f}):\n{text_summary}"
                 
                 context_parts.append(part)
-                current_length += len(part) + 2  # +2 pour \n\n
             
             if not context_parts:
                 result = None
@@ -1432,95 +1718,42 @@ Maximum 3-4 phrases.
             self.logger.warning(f"Erreur lors de l'extraction des mots-clés avec LLM: {str(e)}")
             return None
     
-    def _get_project_charter_from_rag(self) -> Optional[str]:
+    def _get_project_charter_from_file(self) -> Optional[str]:
         """
-        CYCLE COGNITIF HYBRIDE - Récupération du Project Charter
-        Recherche spécifiquement le Project Charter du projet dans le RAG avec métadonnées preserve=True.
+        Architecture unifiée: Récupère le Project Charter depuis le fichier uniquement.
+        Tous les agents (y compris Supervisor) fonctionnent de la même façon.
         
         Returns:
-            str: Contenu du Project Charter ou None si non trouvé
+            str: Contenu du Project Charter
+            
+        Raises:
+            RuntimeError: Si le Project Charter est inaccessible
         """
-        # PRIORITÉ 1: Récupération directe depuis le superviseur
-        if hasattr(self, 'supervisor') and self.supervisor and hasattr(self.supervisor, 'project_charter'):
-            charter = self.supervisor.project_charter
-            if charter and len(charter) > 50:  # Validation minimale
-                self.logger.info("Project Charter récupéré directement depuis le superviseur")
-                return charter
-        
-        # PRIORITÉ 2: Lecture du fichier persistant
         try:
             charter_path = Path("projects") / self.project_name / "docs" / "PROJECT_CHARTER.md"
             if charter_path.exists():
                 charter = charter_path.read_text(encoding='utf-8')
-                if charter and len(charter) > 50:
+                if charter and len(charter) > 50:  # Validation minimale
                     self.logger.info(f"Project Charter récupéré depuis le fichier: {charter_path}")
                     return charter
-        except Exception as e:
-            self.logger.warning(f"Erreur lecture fichier Project Charter: {e}")
-        
-        # PRIORITÉ 3: Recherche dans le RAG si pas trouvé ailleurs
-        if not self.rag_engine:
-            self.logger.error("PROJET COMPROMIS: Aucune source de Project Charter disponible")
-            raise RuntimeError(f"PROJET COMPROMIS: Aucun Project Charter trouvé pour {self.project_name}")
-        
-        try:
-            # Recherche spécifique du Project Charter avec plusieurs stratégies
-            charter_queries = [
-                f"Project Charter {self.project_name}",
-                "Project Charter Objectifs Contraintes",
-                "Charter projet objectifs livrables",
-                "projet objectifs contraintes critères succès"
-            ]
-            
-            best_charter = None
-            best_score = 0
-            
-            for query in charter_queries:
-                results = self.rag_engine.search(query, top_k=3)
-                
-                for result in results:
-                    score = result.get('score', 0)
-                    content = result.get('chunk_text', '')
-                    source = result.get('source', '')
-                    
-                    # Validation heuristique du contenu Charter
-                    charter_indicators = [
-                        'objectifs', 'contraintes', 'livrables', 'critères',
-                        'project charter', 'charter', 'projet'
-                    ]
-                    
-                    content_lower = content.lower()
-                    indicator_count = sum(1 for indicator in charter_indicators 
-                                        if indicator in content_lower)
-                    
-                    # Score combiné : similarité + indicateurs de contenu
-                    combined_score = score + (indicator_count * 0.1)
-                    
-                    if combined_score > best_score and len(content) > 100:
-                        best_charter = content
-                        best_score = combined_score
-                        self.logger.debug(f"Charter candidat trouvé - Score: {combined_score:.2f}, Source: {source}")
-            
-            if best_charter:
-                self.logger.info(f"Project Charter récupéré depuis RAG avec score {best_score:.2f}")
-                return best_charter
+                else:
+                    raise ValueError("Project Charter fichier vide ou trop court")
             else:
-                # ÉCHEC CRITIQUE - Pas de fallback
-                self.logger.error("PROJET COMPROMIS: Aucun Project Charter trouvé dans toutes les sources")
-                raise RuntimeError(f"PROJET COMPROMIS: Aucun Project Charter valide trouvé pour {self.project_name}")
+                raise FileNotFoundError(f"Project Charter non trouvé: {charter_path}")
                 
-        except RuntimeError:
-            # Re-raise les erreurs critiques
-            raise
         except Exception as e:
-            self.logger.error(f"PROJET COMPROMIS: Erreur lors de la récupération du Project Charter: {str(e)}")
-            raise RuntimeError(f"PROJET COMPROMIS: Échec de récupération du Project Charter pour {self.project_name}")
+            self.logger.error(f"PROJET COMPROMIS: Impossible de lire le Project Charter: {str(e)}")
+            raise RuntimeError(f"PROJET COMPROMIS: Project Charter inaccessible pour {self.project_name}: {str(e)}")
     
     def generate_json_with_context(self, prompt: str, **kwargs) -> Dict[str, Any]:
         """Génère une réponse JSON."""
         json_prompt = f"{prompt}\n\nRéponds uniquement avec un JSON valide."
         
-        response = self.generate_with_context(prompt=json_prompt, **kwargs)
+        response = self.generate_with_context_enriched(
+            clean_prompt=json_prompt,
+            strategic_context=self._get_project_charter_from_file(),
+            **kwargs
+        )
         
         try:
             cleaned = response.strip()

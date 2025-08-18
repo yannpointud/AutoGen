@@ -5,6 +5,98 @@ Toutes les modifications notables de ce projet sont documentées dans ce fichier
 Le format est basé sur [Keep a Changelog](https://keepachangelog.com/fr/1.0.0/),
 et ce projet adhère au [Versioning Sémantique](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.4] - 2025-08-18
+
+### 🔧 Amélioré
+- **Amélioration robustesse supervision des jalons**
+  - Envoi automatique des rapports structurés au Supervisor après completion des tâches 
+  - Logique de validation plus tolérante : accepte rapports partiels et détection agents terminés 
+  - Réduction significative des warnings "Pas de rapports structurés fiables"
+- **Parsing intelligent des réponses LLM** 
+  - Gestion native des objets avec attribut `text` (format Mistral avancé)
+  - Messages de debug au lieu de warnings pour conversions normales
+  - Nouvelle méthode `_parse_json_from_llm_response()` pour extraction JSON depuis markdown 
+  - Support des formats ````json`, blocs génériques, et JSON intégré dans texte
+
+### 🐛 Corrigé
+- **SUPERVISION : Warnings "Pas de rapports structurés fiables"**
+  - Cause : Agents généraient des rapports mais ne les envoyaient pas systématiquement au Supervisor
+  - Solution : Envoi automatique via `_tool_report_to_supervisor()` + validation améliorée
+- **PARSING LLM : Warnings "Type inattendu <class 'str'>"** 
+  - Cause : Réponses LLM dans formats objet/liste non gérées intelligemment
+  - Solution : Détection format Mistral + extraction attribut `text` + parsing JSON robuste
+
+## [1.2.3] - 2025-08-18
+
+### 🔧 Amélioré
+- **Injection Project Charter universelle dans tous les appels LLM**
+  - Phase d'Action : `generate_with_context_enriched()` avec `critical_constraints` au lieu de `generate_with_context()`
+  - Communication inter-agents : Injection automatique du Project Charter via `_get_project_charter_from_file()`
+  - Génération JSON : Injection automatique du Project Charter via `_get_project_charter_from_file()`
+
+### 🐛 Corrigé  
+- **BUG CRITIQUE : Erreur appel LLM dans generate_with_context_enriched()**
+  - `MistralConnector.generate() missing 1 required positional argument: 'prompt'`
+  - Cause : Utilisation de `generate()` avec paramètre `messages` au lieu de `generate_with_messages()`
+  - Solution : `base_agent.py:1446` - Remplacement par `llm.generate_with_messages()` + `agent_context`
+- **ARCHITECTURE : Project Charter manquant en Phase 2 du cycle cognitif**
+  - Phase 1 (Alignment) : ✅ Charter injecté via `generate_with_context_enriched()`
+  - Phase 2 (Action) : ❌ Charter absent car utilisation de `generate_with_context()`
+  - Solution : Uniformisation avec `generate_with_context_enriched()` partout
+  - Résultat : Order prompts LLM conforme - Mission → Project Charter → RAG → Outils
+
+## [1.2.2] - 2025-08-17
+
+### 🔧 Amélioré
+- **Injection RAG optimisée avec répartition automatique**
+  - Nouveau paramètre `max_document_size: 50000` configurable pour l'indexation RAG (vs 10KB hardcodé)
+  - Messages de log détaillés lors de troncature : nom du fichier, tailles avant/après
+  - Support de fichiers 5× plus volumineux (ex: `rag_engine.py` indexé complètement)
+- **Système d'injection RAG unifié et simplifié**
+  - ✅ Suppression paramètre redondant `max_results` (utilisait `top_k` à la place)
+  - ✅ Calcul automatique de `chars_per_chunk = max_context_length ÷ top_k` (5000 ÷ 5 = 1000 chars/chunk vs 300 hardcodé)
+  - ✅ Utilisation complète de l'espace disponible : 5000 chars vs ~900 chars précédemment
+  - ✅ Configuration cohérente : un seul paramètre `top_k` contrôle recherche ET injection
+- **Suppression limite arbitraire d'injection RAG**
+  - Suppression du check `len(prompt) > 10000` qui bloquait l'injection sur prompts longs
+  - MLPricePredictor déblocé : injection RAG maintenant fonctionnelle sur prompts 15-20KB
+  - Protection maintenue via `max_context_length`, `top_k`, et timeouts
+
+### 🐛 Corrigé
+- **BUG CRITIQUE : Variable utilisée avant définition**
+  - `source` utilisée ligne 500 avant définition ligne 504 dans `rag_engine.py:index_document()`
+  - Causait des `NameError` lors de troncature de gros documents
+  - Solution : déplacement des définitions de métadonnées avant utilisation
+- **BUG : Hiérarchie des prompts système vs utilisateur inversée**
+  - **Problème** : Le contexte RAG était injecté en `role: "system"` (priorité maximale), écrasant les instructions spécifiques des jalons transmises en `role: "user"`
+  - **Cause racine** : Les agents recevaient le Project Charter complet via RAG système au lieu des instructions de jalon ciblées
+  - **Solution** : 
+    - ✅ **Étape 1** : Déplacement du contexte RAG du prompt système vers le prompt utilisateur avec préfixe "Contexte projet pertinent :"
+    - ✅ **Étape 2** : Création de prompts système spécifiques par agent : `"Tu es {AgentName}, {Role}.\nPersonnalité: {Personality}"`
+  - **Tests** : Suite de tests exhaustive créée pour valider la structure des prompts (`test_prompt_structure_*.py`)
+  
+### 🧪 Tests
+- Tests unitaires pour vérifier troncature RAG et calculs automatiques
+- Validation du fonctionnement : 5000 ÷ 5 = 1000 chars/chunk
+
+## [1.2.1] - 2025-08-16
+
+### 🐛 Corrigé
+- **BUG CRITIQUE : Perte spécifications techniques dans Project Charter** 
+  - **Problème** : La fonction `summarize_constraints()` réduisait le Project Charter à 100 tokens génériques, supprimant toutes les spécifications détaillées (colonnes de données, exemples JSON, stack technique)
+  - **Cause racine** : Prompt de génération du Project Charter avec instruction "Sois concis" qui encourageait la simplification
+  - **Solution** : 
+    - ✅ Remplacement de `summarize_constraints()` par transmission du Project Charter COMPLET aux agents
+    - ✅ Nouveau prompt exhaustif avec instructions "PRÉSERVE INTÉGRALEMENT tous les détails techniques..."
+    - ✅ Augmentation des limites de taille (+50%) : `max_context_length: 2250`, `max_context_tokens: 3000`
+  - **Impact** : Les agents reçoivent maintenant les spécifications complètes au lieu de contraintes génériques, éliminant la génération de code inadéquat
+
+### 🔧 Amélioré  
+- **Parsing JSON robuste** : Nouvelle stratégie `_strategy_progressive_parse()` pour gérer les réponses LLM avec code volumineux
+- **Optimisation prompts Developer** : Limitation automatique des JSON à 4000 caractères pour éviter les échecs de parsing
+- **MetricsVisualizer refondu** : Collecte de vraies métriques depuis les logs actuels avec dashboard HTML autonome
+- **Métriques tokens précises** : Calcul tokens d'entrée + sortie (conversion chars→tokens /3) avec affichage détaillé
+
 ## [1.2.0] - 2025-08-16
 
 ### 🎉 Ajouté
