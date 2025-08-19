@@ -56,7 +56,7 @@ class LightweightLLMService:
             return ""
         
         # Tronquer si trop long pour éviter les timeouts
-        prompt_truncated = prompt[:2000] if len(prompt) > 2000 else prompt
+        prompt_truncated = prompt[:20000] if len(prompt) > 20000 else prompt
         
         extraction_prompt = f'''Extrait 3-5 mots-clés techniques pour recherche dans une base de connaissances de développement logiciel.
 

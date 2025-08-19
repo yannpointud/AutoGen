@@ -16,6 +16,13 @@ from agents.developer import Developer
 from core.llm_connector import LLMFactory
 from core.rag_engine import RAGEngine
 from config import default_config
+from tools.supervisor_tools import (
+    tool_assign_agents_to_milestone,
+    tool_get_progress_report,
+    tool_add_milestone,
+    tool_modify_milestone,
+    tool_remove_milestone
+)
 
 
 class Supervisor(BaseAgent):
@@ -44,6 +51,7 @@ class Supervisor(BaseAgent):
         )
         
         self.project_prompt = project_prompt
+        self.max_corrections = supervisor_config.get('max_corrections', 3)
        
         # RAG singleton pour les agents
         self.rag_singleton = rag_engine
@@ -83,7 +91,7 @@ class Supervisor(BaseAgent):
                     "agents": "Liste des agents à assigner (analyst/developer)"
                 }
             ),
-            self._tool_assign_agents_to_milestone
+            lambda params: tool_assign_agents_to_milestone(self, params)
         )
         
         # get_progress_report
@@ -95,7 +103,7 @@ class Supervisor(BaseAgent):
                     "include_details": "Inclure les détails (true/false)"
                 }
             ),
-            self._tool_get_progress_report
+            lambda params: tool_get_progress_report(self, params)
         )
         
         # add_milestone
@@ -111,7 +119,7 @@ class Supervisor(BaseAgent):
                     "deliverables": "Liste des livrables attendus"
                 }
             ),
-            self._tool_add_milestone
+            lambda params: tool_add_milestone(self, params)
         )
         
         # modify_milestone
@@ -124,7 +132,7 @@ class Supervisor(BaseAgent):
                     "changes": "Dictionnaire des modifications à apporter"
                 }
             ),
-            self._tool_modify_milestone
+            lambda params: tool_modify_milestone(self, params)
         )
         
         # remove_milestone
@@ -136,78 +144,8 @@ class Supervisor(BaseAgent):
                     "milestone_id": "ID du jalon à supprimer"
                 }
             ),
-            self._tool_remove_milestone
+            lambda params: tool_remove_milestone(self, params)
         )
-    
-    def _tool_assign_agents_to_milestone(self, parameters: Dict[str, Any]) -> ToolResult:
-        """Assigne des agents à un jalon."""
-        try:
-            milestone_id = parameters.get('milestone_id', '')
-            agents_list = parameters.get('agents', [])
-            
-            # Valider les agents
-            valid_agents = ['analyst', 'developer']
-            agents_to_assign = [a for a in agents_list if a in valid_agents]
-            
-            # Trouver le jalon
-            milestone = None
-            for m in self.milestones:
-                if str(m.get('id')) == str(milestone_id) or m.get('milestone_id') == milestone_id:
-                    milestone = m
-                    break
-            
-            if not milestone:
-                return ToolResult('error', error=f"Jalon {milestone_id} non trouvé")
-            
-            # Assigner les agents
-            milestone['agents_required'] = agents_to_assign
-            
-            return ToolResult('success', result={
-                'milestone': milestone_id,
-                'agents_assigned': agents_to_assign
-            })
-            
-        except Exception as e:
-            return ToolResult('error', error=str(e))
-    
-    def _tool_get_progress_report(self, parameters: Dict[str, Any]) -> ToolResult:
-        """Génère un rapport de progression."""
-        try:
-            include_details = parameters.get('include_details', 'false').lower() == 'true'
-            
-            completed = self.project_state['milestones_completed']
-            total = len(self.milestones)
-            
-            report = {
-                'project_name': self.project_name,
-                'status': self.project_state['status'],
-                'progress_percentage': (completed / total * 100) if total > 0 else 0,
-                'completed_milestones': completed,
-                'total_milestones': total,
-                'current_milestone': self.milestones[self.current_milestone_index]['name'] 
-                                   if self.current_milestone_index < total else 'Terminé',
-                'started_at': self.project_state['started_at'],
-                'phase': self.project_state['current_phase']
-            }
-            
-            if include_details:
-                report['milestones'] = []
-                for m in self.milestones:
-                    report['milestones'].append({
-                        'id': m['id'],
-                        'name': m['name'],
-                        'status': m.get('status', 'pending'),
-                        'agents': m.get('agents_required', [])
-                    })
-            
-            # Sauvegarder le rapport
-            report_path = Path("projects") / self.project_name / "progress_report.json"
-            report_path.write_text(json.dumps(report, indent=2), encoding='utf-8')
-            
-            return ToolResult('success', result=report, artifact=str(report_path))
-            
-        except Exception as e:
-            return ToolResult('error', error=str(e))
     
     def think(self, task: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -449,9 +387,9 @@ PRIORITÉ ABSOLUE: Aucun détail technique du prompt original ne doit être perd
                 self._apply_verification_decision(verification_decision, milestone)
 
                 # Pause stratégique entre jalons
-                if self.current_milestone_index < len(self.milestones):
-                    self.logger.info("Traitement fin de jalon")
-                    time.sleep(5)        
+                #if self.current_milestone_index < len(self.milestones):
+                #    self.logger.info("Traitement fin de jalon")
+                #    time.sleep(5)        
 
             orchestration_result['status'] = 'completed'
             orchestration_result['ended_at'] = datetime.now().isoformat()
@@ -787,7 +725,7 @@ Fournis une solution concrète et actionnable.
     def get_progress_report(self) -> Dict[str, Any]:
         """Génère un rapport de progression."""
         # Utiliser l'outil pour générer le rapport
-        result = self._tool_get_progress_report({'include_details': 'true'})
+        result = self.tools['get_progress_report']({'include_details': 'true'})
         return result.result if result.status == 'success' else {}
     
     def communicate(self, message: str, recipient: Optional[BaseAgent] = None) -> str:
@@ -803,145 +741,6 @@ Fournis une solution concrète et actionnable.
             for agent in self.agents.values():
                 agent.receive_message(self.name, message)
             return f"Message diffusé à {len(self.agents)} agents"
-    
-    def _tool_add_milestone(self, parameters: Dict[str, Any]) -> ToolResult:
-        """Ajoute un nouveau jalon au plan."""
-        try:
-            after_id = parameters.get('after_milestone_id')
-            name = parameters.get('name', '')
-            description = parameters.get('description', '')
-            agents_required = parameters.get('agents_required', [])
-            deliverables = parameters.get('deliverables', [])
-            
-            if not name or not description:
-                return ToolResult('error', error="Nom et description requis")
-            
-            # Générer un nouvel ID
-            new_id = max([m['id'] for m in self.milestones], default=0) + 1
-            
-            # Créer le nouveau jalon
-            new_milestone = {
-                'id': new_id,
-                'milestone_id': f'milestone_{new_id}',
-                'name': name,
-                'description': description,
-                'agents_required': [a for a in agents_required if a in ['analyst', 'developer']],
-                'deliverables': deliverables,
-                'estimated_duration': 'À estimer',
-                'dependencies': [],
-                'status': 'pending'
-            }
-            
-            # Trouver la position d'insertion
-            if after_id:
-                insert_pos = None
-                for i, m in enumerate(self.milestones):
-                    if str(m['id']) == str(after_id) or m['milestone_id'] == after_id:
-                        insert_pos = i + 1
-                        break
-                if insert_pos is None:
-                    return ToolResult('error', error=f"Jalon {after_id} non trouvé")
-                self.milestones.insert(insert_pos, new_milestone)
-            else:
-                # Ajouter à la fin
-                self.milestones.append(new_milestone)
-            
-            # Mettre à jour dans le RAG
-            self._update_plan_in_rag(f"Nouveau jalon ajouté: {name}")
-            
-            return ToolResult('success', result={
-                'milestone_added': new_milestone,
-                'total_milestones': len(self.milestones)
-            })
-            
-        except Exception as e:
-            return ToolResult('error', error=str(e))
-    
-    def _tool_modify_milestone(self, parameters: Dict[str, Any]) -> ToolResult:
-        """Modifie un jalon existant."""
-        try:
-            milestone_id = parameters.get('milestone_id', '')
-            changes = parameters.get('changes', {})
-            
-            if not milestone_id:
-                return ToolResult('error', error="ID du jalon requis")
-            
-            # Trouver le jalon
-            milestone = None
-            for m in self.milestones:
-                if str(m['id']) == str(milestone_id) or m['milestone_id'] == milestone_id:
-                    milestone = m
-                    break
-            
-            if not milestone:
-                return ToolResult('error', error=f"Jalon {milestone_id} non trouvé")
-            
-            # Vérifier si le jalon peut être modifié
-            if milestone['status'] == 'completed':
-                return ToolResult('error', error="Impossible de modifier un jalon terminé")
-            
-            # Appliquer les modifications
-            allowed_fields = ['name', 'description', 'agents_required', 'deliverables', 'estimated_duration']
-            modifications = []
-            
-            for field, new_value in changes.items():
-                if field in allowed_fields:
-                    old_value = milestone.get(field)
-                    milestone[field] = new_value
-                    modifications.append(f"{field}: {old_value} → {new_value}")
-            
-            # Mettre à jour dans le RAG
-            self._update_plan_in_rag(f"Jalon {milestone['name']} modifié: {', '.join(modifications)}")
-            
-            return ToolResult('success', result={
-                'milestone_modified': milestone,
-                'changes_applied': modifications
-            })
-            
-        except Exception as e:
-            return ToolResult('error', error=str(e))
-    
-    def _tool_remove_milestone(self, parameters: Dict[str, Any]) -> ToolResult:
-        """Supprime un jalon (seulement si pas commencé)."""
-        try:
-            milestone_id = parameters.get('milestone_id', '')
-            
-            if not milestone_id:
-                return ToolResult('error', error="ID du jalon requis")
-            
-            # Trouver le jalon
-            milestone_index = None
-            milestone = None
-            for i, m in enumerate(self.milestones):
-                if str(m['id']) == str(milestone_id) or m['milestone_id'] == milestone_id:
-                    milestone_index = i
-                    milestone = m
-                    break
-            
-            if milestone is None:
-                return ToolResult('error', error=f"Jalon {milestone_id} non trouvé")
-            
-            # Vérifier si le jalon peut être supprimé
-            if milestone['status'] in ['in_progress', 'completed']:
-                return ToolResult('error', error="Impossible de supprimer un jalon commencé ou terminé")
-            
-            # Supprimer le jalon
-            removed_milestone = self.milestones.pop(milestone_index)
-            
-            # Ajuster current_milestone_index si nécessaire
-            if milestone_index <= self.current_milestone_index:
-                self.current_milestone_index = max(0, self.current_milestone_index - 1)
-            
-            # Mettre à jour dans le RAG
-            self._update_plan_in_rag(f"Jalon supprimé: {removed_milestone['name']}")
-            
-            return ToolResult('success', result={
-                'milestone_removed': removed_milestone,
-                'total_milestones': len(self.milestones)
-            })
-            
-        except Exception as e:
-            return ToolResult('error', error=str(e))
     
     def _update_plan_in_rag(self, change_description: str) -> None:
         """Met à jour le plan dans le RAG après modification."""
@@ -1045,14 +844,14 @@ Sois conservateur : ne propose des changements que si vraiment nécessaire."""
             try:
                 if action == 'add':
                     details = change.get('details', {})
-                    result = self._tool_add_milestone(details)
+                    result = self.tools['add_milestone'](details)
                     if result.status == 'success':
                         self.logger.info(f"Jalon ajouté: {details.get('name')}")
                 
                 elif action == 'modify':
                     milestone_id = change.get('milestone_id')
                     details = change.get('details', {})
-                    result = self._tool_modify_milestone({
+                    result = self.tools['modify_milestone']({
                         'milestone_id': milestone_id,
                         'changes': details
                     })
@@ -1061,7 +860,7 @@ Sois conservateur : ne propose des changements que si vraiment nécessaire."""
                 
                 elif action == 'remove':
                     milestone_id = change.get('milestone_id')
-                    result = self._tool_remove_milestone({'milestone_id': milestone_id})
+                    result = self.tools['remove_milestone']({'milestone_id': milestone_id})
                     if result.status == 'success':
                         self.logger.info(f"Jalon {milestone_id} supprimé")
                         
@@ -1437,7 +1236,7 @@ Réponds avec un JSON:
         
         # Gestion des tentatives de correction pour éviter boucles infinites
         correction_count = current_milestone.get('correction_attempts', 0)
-        max_corrections = 3
+        max_corrections = self.max_corrections
         
         if decision == 'approve':
             # Jalon approuvé - continuer normalement
@@ -1467,7 +1266,7 @@ Réponds avec un JSON:
             current_milestone['correction_attempts'] = correction_count + 1
             
             # Ajouter un jalon de correction via l'outil existant
-            correction_result = self._tool_add_milestone({
+            correction_result = self.tools['add_milestone']({
                 'after_milestone_id': current_milestone['id'],
                 'name': f"Correction: {current_milestone['name']}",
                 'description': f"Action corrective requise: {reason}",

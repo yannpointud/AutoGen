@@ -11,7 +11,7 @@ general:
   conversation_compression_threshold: 60000  #  Seuil en caractères pour déclencher la compression de l'historique 60000 moitié du max appel API
   max_tokens: 32768
   # Rate limiting global pour tous les appels API
-  api_rate_limit_interval: 5  # Secondes entre chaque appel API (tous fournisseurs confondus) - Augmenté pour cycle cognitif hybride
+  api_rate_limit_interval: 1.5  # Secondes entre chaque appel API (tous fournisseurs confondus) 
 
 llm:
   default_model: "mistral-small-latest"
@@ -87,9 +87,10 @@ agents:
     model: "magistral-medium-latest"
     max_milestones: 15
     allow_dynamic_milestones: true
+    max_corrections: 3
     guidelines:
-      - "Analyser le projet et identifier la complexité réelle (2-10 jalons selon besoins)"
-      - "Créer des jalons cohérents et atteignables"
+      - "Analyser le projet et identifier la complexité réelle (2-15 jalons selon besoins)"
+      - "Créer des jalons cohérents et atteignables par un LLM en une fois"
       - "Déléguer les tâches aux agents appropriés selon leurs forces"
       - "Superviser sans micro-manager"
       - "Arbitrer les conflits et débloquer les situations"
@@ -98,7 +99,7 @@ agents:
   
   analyst:
     role: "Expert en analyse, architecture et qualité. Responsable de la conception complète et des standards."
-    personality: "Rigoureux, visionnaire, pédagogue. Équilibre parfait entre théorie et pratique."
+    personality: "Rigoureux, visionnaire. Équilibre parfait entre théorie et pratique."
     model: "magistral-medium-latest"
     guidelines:
       - "COMMENCER par identifier le langage/framework approprié selon le projet"
@@ -129,14 +130,11 @@ agents:
       - "Écrire des tests unitaires RÉELS qui testent le code implémenté (pas des tests vides)"
       - "Ajouter des docstrings détaillées avec exemples d'utilisation concrets"
       - "Créer des imports et dépendances nécessaires pour que le code soit exécutable"
-      - "Si une tâche demande 'calculatrice', implémenter VRAIMENT les 4 opérations arithmétiques"
-      - "Si une tâche demande 'CLI', implémenter VRAIMENT l'interface avec les outils standards du langage"
       - "Utiliser le RAG pour comprendre le contexte, mais ignorer les exemples incomplets qu'il pourrait contenir"
       - "TOUJOURS utiliser search_context pour vérifier l'existant avant de créer un nouveau fichier de code"
       - "En cas de doute sur la pertinence ou la nécessité d'une tâche, consulter le SUPERVISEUR via send_message_to_agent('supervisor', 'question')"
       - "Valider que le code généré est prêt pour la production, pas pour un prototype"
-      - "Préférer un code simple et fonctionnel à un code complexe mais incomplet"
-      - "OPTIMISATION JSON: Si le code d'un fichier dépasse 4000 caractères, diviser en plusieurs outils implement_code séparés ou utiliser des imports pour réduire la taille"
+      - "OPTIMISATION JSON: Si le code d'un fichier dépasse 8000 caractères, diviser en plusieurs outils implement_code séparés ou utiliser des imports pour réduire la taille"
       - "OPTIMISATION JSON: Privilégier des noms de fichiers courts et du code concis pour éviter les échecs de parsing JSON"
       - "RESPONSABILITÉ OUTIL create_project_file: Créer UNIQUEMENT les LIVRABLES FINAUX du projet (README, manifestes de dépendances, documentation utilisateur) en PHASE DE LIVRAISON. Ne pas créer les configs de standards d'équipe."
 
@@ -196,6 +194,7 @@ rag:
       max_output_length: 2000  # Résumé substantiel
       temperature: 0.1
       timeout: 30
+      max_tokens_summary: 200  # Nombre max de tokens pour les résumés d'agents/milestones
   
   score_weights:
     similarity: 0.6

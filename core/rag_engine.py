@@ -179,14 +179,14 @@ class CompressionManager:
             
             {chr(10).join(texts[:10])}
             
-            Résume en 2-3 phrases les points clés, décisions importantes et résultats.
+            Résume en quelques phrases les points clés, décisions importantes et résultats.
             Sois concis et factuel.
             """
             
             summary_text = llm.generate(
                 prompt=prompt,
                 temperature=0.3,
-                max_tokens=200
+                max_tokens=self.max_tokens_summary
             )
             
             # Créer le résumé avec métadonnées
@@ -296,6 +296,7 @@ class RAGEngine:
         self.auto_index_extensions = rag_config['auto_index_extensions']
         self.auto_index_folders = rag_config['auto_index_folders']
         self.working_memory_enabled = rag_config['working_memory_enabled']
+        self.max_tokens_summary = rag_config['auto_context_injection']['context_summarization']['max_tokens_summary']
 
         # Paramètres HNSW
         self.hnsw_m = 16

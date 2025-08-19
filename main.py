@@ -351,44 +351,43 @@ class AutoGenMain:
         
         # Exécution automatique si demandée
         if options["auto_execute"]:
-            if Confirm.ask("\n[bold yellow]Lancer l'exécution automatique ?[/bold yellow]", default=True):
-                self.console.print("\n[bold]🚀 Lancement de l'orchestration complète...[/bold]")
-                self.console.print("[dim]Les agents vont maintenant travailler. Cela peut prendre plusieurs minutes.[/dim]")
+            self.console.print("\n[bold]🚀 Lancement de l'orchestration complète...[/bold]")
+            self.console.print("[dim]Les agents vont maintenant travailler. Cela peut prendre plusieurs minutes.[/dim]")
+            
+            # Lancement de l'orchestration complète
+            final_results = supervisor.orchestrate()
                 
-                # Lancement de l'orchestration complète
-                final_results = supervisor.orchestrate()
-                
-                self.console.print("\n[bold green]✨ Orchestration terminée ![/bold green]")
-                
-                # Afficher un résumé détaillé des résultats
-                milestone_results = final_results.get('milestones_results', [])
-                completed_count = sum(1 for r in milestone_results if r.get('status') == 'completed')
-                self.console.print(f"  • {completed_count}/{len(milestone_results)} jalons complétés.")
+            self.console.print("\n[bold green]✨ Orchestration terminée ![/bold green]")
+            
+            # Afficher un résumé détaillé des résultats
+            milestone_results = final_results.get('milestones_results', [])
+            completed_count = sum(1 for r in milestone_results if r.get('status') == 'completed')
+            self.console.print(f"  • {completed_count}/{len(milestone_results)} jalons complétés.")
+            
+            # Afficher plus de détails en mode verbose
+            if options.get("verbose", False):
+                self.console.print("\n[dim]Résultats détaillés par jalon :[/dim]")
+                for i, result in enumerate(milestone_results, 1):
+                    status = result.get('status', 'unknown')
+                    name = result.get('name', f'Jalon {i}')
+                    self.console.print(f"  [dim]{i}. {name} : {status}[/dim]")
+                    if result.get('error'):
+                        self.console.print(f"     [dim red]Erreur : {result['error']}[/dim red]")
+            
+            # Ajouter le rapport de progression détaillé du superviseur
+            try:
+                report = supervisor.get_progress_report()
+                self.console.print(f"  • Progression : {report['progress_percentage']:.0f}%")
+                self.console.print(f"  • Statut : {report['status']}")
                 
                 # Afficher plus de détails en mode verbose
                 if options.get("verbose", False):
-                    self.console.print("\n[dim]Résultats détaillés par jalon :[/dim]")
-                    for i, result in enumerate(milestone_results, 1):
-                        status = result.get('status', 'unknown')
-                        name = result.get('name', f'Jalon {i}')
-                        self.console.print(f"  [dim]{i}. {name} : {status}[/dim]")
-                        if result.get('error'):
-                            self.console.print(f"     [dim red]Erreur : {result['error']}[/dim red]")
-                
-                # Ajouter le rapport de progression détaillé du superviseur
-                try:
-                    report = supervisor.get_progress_report()
-                    self.console.print(f"  • Progression : {report['progress_percentage']:.0f}%")
-                    self.console.print(f"  • Statut : {report['status']}")
-                    
-                    # Afficher plus de détails en mode verbose
-                    if options.get("verbose", False):
-                        self.console.print("\n[dim]Rapport de progression complet :[/dim]")
-                        for key, value in report.items():
-                            if key not in ['progress_percentage', 'status']:
-                                self.console.print(f"  [dim]• {key} : {value}[/dim]")
-                except Exception as e:
-                    self.console.print(f"  • [dim]Rapport détaillé non disponible: {str(e)}[/dim]")
+                    self.console.print("\n[dim]Rapport de progression complet :[/dim]")
+                    for key, value in report.items():
+                        if key not in ['progress_percentage', 'status']:
+                            self.console.print(f"  [dim]• {key} : {value}[/dim]")
+            except Exception as e:
+                self.console.print(f"  • [dim]Rapport détaillé non disponible: {str(e)}[/dim]")
         
         # Génération des métriques
         if options["generate_metrics"]:

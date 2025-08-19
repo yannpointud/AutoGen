@@ -138,6 +138,12 @@ class BaseAgent(ABC):
     
     def _register_common_tools(self) -> None:
         """Enregistre les outils communs à tous les agents."""
+        from tools.base_tools import (
+            tool_search_context,
+            tool_send_message_to_agent,
+            tool_share_discovery,
+            tool_report_to_supervisor
+        )
         
         # search_context
         self.register_tool(
@@ -149,7 +155,7 @@ class BaseAgent(ABC):
                     "top_k": "Nombre de résultats (optionnel, défaut: 5)"
                 }
             ),
-            self._tool_search_context
+            lambda params: tool_search_context(self, params)
         )
         
         # send_message_to_agent
@@ -162,7 +168,7 @@ class BaseAgent(ABC):
                     "message": "Message ou question à envoyer"
                 }
             ),
-            self._tool_send_message_to_agent
+            lambda params: tool_send_message_to_agent(self, params)
         )
         
         # share_discovery
@@ -175,7 +181,7 @@ class BaseAgent(ABC):
                     "importance": "Niveau d'importance (low/normal/high/critical)"
                 }
             ),
-            self._tool_share_discovery
+            lambda params: tool_share_discovery(self, params)
         )
         
         # report_to_supervisor
@@ -188,147 +194,8 @@ class BaseAgent(ABC):
                     "content": "Contenu du rapport"
                 }
             ),
-            self._tool_report_to_supervisor
+            lambda params: tool_report_to_supervisor(self, params)
         )
-    
-    def _tool_search_context(self, parameters: Dict[str, Any]) -> ToolResult:
-        """Implémentation de l'outil search_context."""
-        try:
-            if not self.rag_engine:
-                return ToolResult('error', error="RAG engine non disponible")
-            
-            query = parameters.get('query', '')
-            top_k = int(parameters.get('top_k', 5))
-            
-            results = self.rag_engine.search(query, top_k=top_k)
-            
-            # Formater les résultats
-            formatted_results = []
-            for r in results:
-                formatted_results.append({
-                    'text': r.get('chunk_text', '')[:200],
-                    'source': r.get('source', 'unknown'),
-                    'score': r.get('score', 0)
-                })
-            
-            return ToolResult('success', result=formatted_results)
-            
-        except Exception as e:
-            return ToolResult('error', error=str(e))
-    
-    def _tool_send_message_to_agent(self, parameters: Dict[str, Any]) -> ToolResult:
-        """Implémentation de l'outil send_message_to_agent."""
-        try:
-            if not self.communication_enabled:
-                return ToolResult('error', error="Communication inter-agents désactivée")
-            
-            agent_name = parameters.get('agent_name', '').lower()
-            message = parameters.get('message', '')
-            
-            task_id = self.state.get('current_task_id', 'unknown')
-            
-            # Vérifier la limite d'échanges
-            exchanges_count = self.current_exchanges.get(task_id, 0)
-            if exchanges_count >= self.max_exchanges:
-                return ToolResult('error', error=f"Limite d'échanges atteinte ({self.max_exchanges})")
-            
-            # Obtenir l'agent via le superviseur
-            if not self.supervisor:
-                return ToolResult('error', error="Pas de superviseur pour la communication")
-            
-            colleague = self.supervisor.get_agent(agent_name)
-            if not colleague:
-                return ToolResult('error', error=f"Agent {agent_name} non trouvé")
-            
-            # Envoyer le message
-            response = colleague.answer_colleague(self.name, message)
-            
-            # Mettre à jour le compteur
-            self.current_exchanges[task_id] = exchanges_count + 1
-            
-            return ToolResult('success', result={'response': response, 'from': agent_name})
-            
-        except Exception as e:
-            return ToolResult('error', error=str(e))
-    
-    def _tool_share_discovery(self, parameters: Dict[str, Any]) -> ToolResult:
-        """Implémentation de l'outil share_discovery."""
-        try:
-            discovery = parameters.get('discovery', '')
-            importance = parameters.get('importance', 'normal')
-            
-            if not self.rag_engine:
-                return ToolResult('error', error="RAG engine non disponible")
-            
-            # Valider l'importance
-            valid_importance = ['low', 'normal', 'high', 'critical']
-            if importance not in valid_importance:
-                importance = 'normal'
-            
-            # Créer le message
-            prefix = {
-                'critical': '🚨 CRITIQUE',
-                'high': '⚠️ IMPORTANT',
-                'normal': 'ℹ️ Info',
-                'low': '💡 Note'
-            }.get(importance, 'ℹ️ Info')
-            
-            message = f"{prefix} - {self.name}: {discovery}"
-            
-            # Indexer dans la mémoire de travail
-            self.rag_engine.index_to_working_memory(
-                message,
-                {
-                    'type': 'discovery',
-                    'agent_name': self.name,
-                    'importance': importance,
-                    'milestone': self.current_milestone_id or 'unknown'
-                }
-            )
-            
-            return ToolResult('success', result={'discovery_shared': True})
-            
-        except Exception as e:
-            return ToolResult('error', error=str(e))
-    
-    def _tool_report_to_supervisor(self, parameters: Dict[str, Any]) -> ToolResult:
-        """Implémentation de l'outil report_to_supervisor."""
-        try:
-            if not self.supervisor:
-                return ToolResult('error', error="Pas de superviseur assigné")
-            
-            report_type = parameters.get('report_type', 'progress')
-            content = parameters.get('content', {})
-            
-            # Construire le rapport
-            report = {
-                'type': report_type,
-                'agent': self.name,
-                'timestamp': datetime.now().isoformat(),
-                'task_id': self.state.get('current_task_id'),
-                'content': content
-            }
-            
-            # Envoyer au superviseur
-            self.supervisor.receive_report(self.name, report)
-            
-            # Logger dans le RAG si important
-            if report_type in ['issue', 'completion']:
-                if self.rag_engine:
-                    self.rag_engine.index_to_working_memory(
-                        f"Rapport {self.name} → Superviseur: {report_type}",
-                        {
-                            'type': 'supervisor_report',
-                            'agent_name': self.name,
-                            'report_type': report_type,
-                            'milestone': self.current_milestone_id
-                        }
-                    )
-            
-            return ToolResult('success', result={'report_sent': True})
-            
-        except Exception as e:
-            return ToolResult('error', error=str(e))
     
     def _parse_tool_calls(self, llm_response: str) -> List[Dict[str, Any]]:
         """Parse de manière robuste les appels d'outils depuis la réponse du LLM avec json5."""
@@ -796,7 +663,6 @@ Continuer l'amélioration de la couverture de tests.
             reasoning_start = time.time()
             
             # Construire le prompt pour le LLM principal avec contraintes injectées
-            tools_description = self._format_tools_for_prompt()
             
             # Instruction spécifique pour les agents Developer
             code_quality_reminder = ""
@@ -817,9 +683,6 @@ Continuer l'amélioration de la couverture de tests.
 📦 LIVRABLES ATTENDUS: 
 {', '.join(task.get('deliverables', []))}
 {code_quality_reminder}
-
-🛠️ OUTILS DISPONIBLES:
-{tools_description}
 
 ANALYSE cette tâche en gardant STRICTEMENT en tête les contraintes du projet:
 1. ALIGNEMENT: Cette tâche respecte-t-elle les contraintes critiques identifiées ?
@@ -842,8 +705,7 @@ Réponds en texte libre, PAS en JSON. Sois concis mais précis.
             # Phase ACT - faire confiance à la mémoire conversationnelle
             action_prompt = f"""Basé sur l'analyse que tu viens de fournir, traduis ton plan en un JSON d'appels d'outils.
 
-Outils disponibles:
-{tools_description}
+Utilise les outils disponibles dans ton prompt système.
 
 Tu DOIS répondre UNIQUEMENT avec un JSON valide contenant la liste d'outils à utiliser.
 
@@ -982,7 +844,7 @@ RÉPONDS UNIQUEMENT AVEC LE JSON, AUCUN TEXTE AVANT OU APRÈS.
                 # Si aucun outil n'a pu accomplir la tâche
                 if not result['artifacts'] and all(t['status'] == 'error' for t in result['tools_executed']):
                     # Reporter au superviseur en utilisant l'outil
-                    self._tool_report_to_supervisor({
+                    self.tools['report_to_supervisor']({
                         'report_type': 'issue',
                         'content': {
                             'task_id': plan.get('task_id'),
@@ -1001,7 +863,7 @@ RÉPONDS UNIQUEMENT AVEC LE JSON, AUCUN TEXTE AVANT OU APRÈS.
                         
                         # AJOUT : Envoi systématique du rapport au supervisor
                         try:
-                            self._tool_report_to_supervisor({
+                            self.tools['report_to_supervisor']({
                                 'report_type': 'completion',
                                 'content': structured_report
                             })
@@ -1108,8 +970,7 @@ RÉPONDS UNIQUEMENT AVEC LE JSON, AUCUN TEXTE AVANT OU APRÈS.
         """Répond à la question d'un collègue."""
         self.logger.info(f"Question reçue de {asking_agent}: {question[:100]}...")
         
-        response_prompt = f"""Tu es {self.name}, {self.role}.
-Un collègue agent te pose une question.
+        response_prompt = f"""Un collègue agent te pose une question.
 
 {asking_agent} demande: {question}
 
@@ -1222,13 +1083,17 @@ Maximum 3-4 phrases.
         """Génère une réponse en utilisant l'historique conversationnel et le contexte RAG."""
         messages = self.get_conversation_context()
         
-        # NOUVEAU : Créer prompt système avec identité agent + guidelines
+        # NOUVEAU : Créer prompt système avec identité agent + guidelines + outils
         guidelines_text = '\n'.join(['- ' + g for g in self.guidelines]) if self.guidelines else ""
+        tools_description = self._format_tools_for_prompt()
         agent_system_prompt = f"""Tu es {self.name}, {self.role}.
 Personnalité: {self.personality}
 
 Guidelines comportementales:
-{guidelines_text}"""
+{guidelines_text}
+
+🛠️ OUTILS DISPONIBLES:
+{tools_description}"""
         system_message = {
             "role": "system",
             "content": agent_system_prompt
@@ -1453,13 +1318,17 @@ Guidelines comportementales:
         # 2. Obtenir l'historique existant
         messages = self.get_conversation_context()
         
-        # 3. Ajouter le prompt système avec guidelines
+        # 3. Ajouter le prompt système avec guidelines + outils
         guidelines_text = '\n'.join(['- ' + g for g in self.guidelines]) if self.guidelines else ""
+        tools_description = self._format_tools_for_prompt()
         agent_system_prompt = f"""Tu es {self.name}, {self.role}.
 Personnalité: {self.personality}
 
 Guidelines comportementales:
-{guidelines_text}"""
+{guidelines_text}
+
+🛠️ OUTILS DISPONIBLES:
+{tools_description}"""
         system_message = {
             "role": "system",
             "content": agent_system_prompt

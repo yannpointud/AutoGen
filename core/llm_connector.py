@@ -306,7 +306,7 @@ class MistralConnector(LLMConnector):
             if schema:
                 self._validate_json_schema(result, schema)
             
-            time.sleep(1)
+            #time.sleep(1)
             return result
             
         except json.JSONDecodeError as e:

@@ -5,6 +5,17 @@ Toutes les modifications notables de ce projet sont documentées dans ce fichier
 Le format est basé sur [Keep a Changelog](https://keepachangelog.com/fr/1.0.0/),
 et ce projet adhère au [Versioning Sémantique](https://semver.org/spec/v2.0.0.html).
 
+
+
+## [1.2.5] - 2025-08-19
+### 🐛 Corrigé
+- **Ratelimiter ne gérait pas la concurrence**
+  - Serialisation des appels LLM pour eliminer les erreurs d'acces API concurrents
+### 🔧 Amélioré
+- **Architecture des tools**
+  - Descriptifs des tools du prompt user -> prompt systeme
+  - Ventilation du code des tools dans un dossier `tools` pour chaque agent
+
 ## [1.2.4] - 2025-08-18
 
 ### 🔧 Amélioré

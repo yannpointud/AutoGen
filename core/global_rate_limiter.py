@@ -65,6 +65,7 @@ class GlobalRateLimiter:
     def enforce_rate_limit(self, connector_name: str = "Unknown") -> None:
         """
         Applique le rate limiting global pour tous les appels API.
+        Corrigé pour éviter les race conditions.
         
         Args:
             connector_name: Nom du connecteur pour logging (optionnel)
@@ -87,9 +88,16 @@ class GlobalRateLimiter:
                     f"(last request {time_since_last:.2f}s ago)"
                 )
                 
-                time.sleep(sleep_duration)
-                # Utiliser le timestamp calculé après le sleep
+                # Mettre à jour AVANT le sleep pour éviter que d'autres threads
+                # calculent le même temps d'attente
                 self._last_request_time = current_time + sleep_duration
+                
+                # Libérer le verrou pendant le sleep pour permettre aux autres d'attendre
+                self._global_lock.release()
+                try:
+                    time.sleep(sleep_duration)
+                finally:
+                    self._global_lock.acquire()
             else:
                 # Pas de sleep, utiliser le timestamp actuel
                 self._last_request_time = current_time
