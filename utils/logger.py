@@ -278,8 +278,10 @@ def log_llm_complete_exchange(
     
     # Log de la DEMANDE (ce qui est envoyé au LLM)
     # Utiliser DEBUG pour s'assurer que c'est loggué même si le niveau global est INFO
+    prompt_length = log_entry['prompt_total_length']
+    estimated_tokens = prompt_length // 3
     llm_debug_logger.debug(
-        f"🚀 LLM REQUEST | Agent: {agent_name} | Model: {model}",
+        f"🚀 LLM REQUEST | Agent: {agent_name} | Model: {model} | Chars: {prompt_length} | Est.Tokens: {estimated_tokens}",
         extra=log_entry
     )
     

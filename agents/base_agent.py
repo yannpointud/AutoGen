@@ -206,27 +206,32 @@ class BaseAgent(ABC):
             self.logger.warning(f"Réponse LLM vide ou trop longue ({len(llm_response)} chars), pas de parsing d'outils")
             return tool_calls
 
-        # 1. Capturer tous les blocs ```json ... ```
-        pattern = r'```json\s*(.*?)\s*```'
+        # 1. Capturer tous les blocs de code (```json ou ``` génériques contenant JSON)
+        patterns = [
+            r'```json\s*(.*?)\s*```',  # Blocs explicitement marqués JSON
+            r'```\s*(\[.*?\])\s*```',  # Blocs génériques contenant des arrays JSON
+            r'```\s*(\{.*?\})\s*```'   # Blocs génériques contenant des objets JSON
+        ]
+        
+        matches = []
         try:
-            matches = re.findall(pattern, llm_response, re.DOTALL)
+            for pattern in patterns:
+                pattern_matches = re.findall(pattern, llm_response, re.DOTALL)
+                matches.extend(pattern_matches)
+                if pattern_matches:
+                    self.logger.debug(f"Trouvé {len(pattern_matches)} match(es) avec pattern {pattern}")
         except Exception as e:
             self.logger.error(f"Erreur regex lors du parsing des outils: {str(e)}")
             return tool_calls
 
         for match in matches:
-            # Pré-validation du JSON avant parsing
+            # Nettoyage basique seulement
             match_clean = match.strip()
             if not match_clean:
                 self.logger.debug("Bloc JSON vide ignoré")
                 continue
-                
-            # Vérifier que le JSON semble complet (parenthèses/crochets équilibrés)
-            if not self._is_json_potentially_valid(match_clean):
-                self.logger.warning(f"JSON potentiellement malformé ignoré : {match_clean[:100]}...")
-                continue
 
-            # Tentative de parsing avec récupération intelligente
+            # Parsing direct sans pré-validation - plus fiable
             parsed_items = self._robust_json_parse(match_clean)
             
             # 3. Vérifier chaque item récupéré
@@ -550,34 +555,6 @@ Continuer l'amélioration de la couverture de tests.
         
         return tools
 
-    def _is_json_potentially_valid(self, json_str: str) -> bool:
-        """Vérifie rapidement si un JSON semble potentiellement valide (parenthèses équilibrées)."""
-        try:
-            # Si le JSON est très long, faire confiance au parsing JSON5
-            if len(json_str) > 3000:
-                return True  # Laisser json5.loads décider
-            
-            # Compter les caractères d'ouverture et de fermeture
-            open_braces = json_str.count('{')
-            close_braces = json_str.count('}')
-            open_brackets = json_str.count('[')
-            close_brackets = json_str.count(']')
-            
-            # Vérification basique d'équilibrage
-            if open_braces != close_braces or open_brackets != close_brackets:
-                return False
-                
-            # Vérifier qu'il y a au moins une paire de crochets/accolades
-            if open_braces == 0 and open_brackets == 0:
-                return False
-                
-            # Vérifier que le JSON ne se termine pas abruptement par une erreur
-            if " | Erreur :" in json_str or "Unexpected end of input" in json_str:
-                return False
-                
-            return True
-        except Exception:
-            return False
 
 
     def execute_tool(self, tool_name: str, parameters: Dict[str, Any]) -> ToolResult:
@@ -757,7 +734,6 @@ RÉPONDS UNIQUEMENT AVEC LE JSON, AUCUN TEXTE AVANT OU APRÈS.
                 clean_prompt=action_prompt,
                 strategic_context=critical_constraints,  # Project Charter injecté
                 temperature=0.3,  # Plus bas pour JSON précis
-                max_tokens=4000
             )
             
             # Parser les appels d'outils depuis la réponse JSON
@@ -841,37 +817,35 @@ RÉPONDS UNIQUEMENT AVEC LE JSON, AUCUN TEXTE AVANT OU APRÈS.
                     self.logger.warning(f"Outil {tool_name} a échoué: {tool_result.error}")
                     # Continuer avec les autres outils
             
-                # Si aucun outil n'a pu accomplir la tâche
-                if not result['artifacts'] and all(t['status'] == 'error' for t in result['tools_executed']):
-                    # Reporter au superviseur en utilisant l'outil
-                    self.tools['report_to_supervisor']({
-                        'report_type': 'issue',
-                        'content': {
-                            'task_id': plan.get('task_id'),
-                            'reason': 'Tous les outils planifiés ont échoué ou le plan était invalide.'
-                        }
-                    })
-                    result['status'] = 'failed'
-                else:
-                    result['status'] = 'completed'
+            # Après la boucle : évaluer le résultat global
+            if not result['artifacts'] and all(t['status'] == 'error' for t in result['tools_executed']):
+                # Reporter au superviseur en utilisant l'outil
+                self.tools['report_to_supervisor']({
+                    'report_type': 'issue',
+                    'content': {
+                        'task_id': plan.get('task_id'),
+                        'reason': 'Tous les outils planifiés ont échoué ou le plan était invalide.'
+                    }
+                })
+                result['status'] = 'failed'
+            else:
+                result['status'] = 'completed'
+                
+                # PHASE 2: Génération du rapport structuré pour les tâches réussies
+                if result['status'] == 'completed':
+                    structured_report = self._generate_structured_report(plan, result)
+                    result['structured_report'] = structured_report
+                    self.logger.info(f"Rapport structuré généré: {structured_report.get('self_assessment', 'unknown')}")
                     
-                    # PHASE 2: Génération du rapport structuré pour les tâches réussies
-                    if result['status'] == 'completed':
-                        structured_report = self._generate_structured_report(plan, result)
-                        result['structured_report'] = structured_report
-                        self.logger.info(f"Rapport structuré généré: {structured_report.get('self_assessment', 'unknown')}")
-                        
-                        # AJOUT : Envoi systématique du rapport au supervisor
-                        try:
-                            self.tools['report_to_supervisor']({
-                                'report_type': 'completion',
-                                'content': structured_report
-                            })
-                            self.logger.debug("Rapport structuré envoyé au supervisor")
-                        except Exception as e:
-                            self.logger.warning(f"Échec envoi rapport au supervisor: {e}")
-
-            
+                    # AJOUT : Envoi systématique du rapport au supervisor
+                    try:
+                        self.tools['report_to_supervisor']({
+                            'report_type': 'completion',
+                            'content': structured_report
+                        })
+                        self.logger.debug("Rapport structuré envoyé au supervisor")
+                    except Exception as e:
+                        self.logger.warning(f"Échec envoi rapport au supervisor: {e}")
         except Exception as e:
             self.logger.error(f"Erreur lors de l'exécution: {str(e)}")
             result['status'] = 'failed'
@@ -1465,7 +1439,7 @@ Guidelines comportementales:
         
         try:
             # Configuration depuis default_config.yaml
-            max_context_length = auto_context_config.get('max_context_length', 5000)
+            max_context_length = auto_context_config.get('max_context_length', 50000)
             cache_enabled = auto_context_config.get('cache_enabled', True)
             
             # Cache pour éviter de chercher la même chose plusieurs fois dans la même tâche

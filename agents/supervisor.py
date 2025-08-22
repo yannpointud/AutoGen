@@ -198,50 +198,37 @@ Réponds avec une analyse structurée et un plan de jalons clair.
             
             # PHASE 1: Création du Project Charter
             self.logger.info("Création du Project Charter...")
-            charter_prompt = f"""Transforme la demande suivante en Project Charter COMPLET en préservant TOUS les détails techniques critiques:
+            charter_prompt = f"""Reformule UNIQUEMENT la demande suivante en Project Charter structuré. 
 
-PROJET: {project_prompt}
+PROMPT ORIGINAL: {project_prompt}
 
-INSTRUCTIONS CRITIQUES:
-- PRÉSERVE INTÉGRALEMENT: schémas de données, colonnes, formats, exemples JSON/XML, APIs endpoints...
-- GARDE tous les détails techniques: stack imposée, versions, configurations spécifiques...
-- INCLUS tous les exemples concrets fournis dans le prompt original
-- CONSERVE les spécifications métier précises sans simplification
-- FORMAT: structuré mais exhaustif (pas concis)
+RÈGLES STRICTES:
+- UNIQUEMENT reformuler/structurer ce qui est dans le PROMPT ORIGINAL
+- INTERDICTION d'ajouter des détails non mentionnés
+- INTERDICTION d'inventer des exemples ou spécifications
+- Longueur max: {len(project_prompt) * 2} caractères
+- Si une information n'existe pas dans le PROMPT ORIGINAL, écrire "Non spécifié"
 
-Format requis:
+Format obligatoire:
 ## Objectifs
-- [Objectif principal avec contexte métier]
-- [Objectifs secondaires détaillés]
+- [Ce qui est demandé dans le prompt original seulement]
 
-## Contraintes Techniques
-- [Stack technique imposée avec versions si spécifiées]
-- [Schémas de données COMPLETS avec types et exemples]
-- [Formats d'entrée/sortie avec exemples JSON/XML exacts]
-- [Autres contraintes techniques spécifiques...]
+## Contraintes Techniques  
+- [Seulement si mentionnées dans le prompt original, sinon "Non spécifié"]
 
 ## Contraintes Métier
-- [Domaine d'application et règles métier]
-- [Contraintes de temps/ressources/scope...]
+- [Seulement si mentionnées dans le prompt original, sinon "Non spécifié"] 
 
-## Spécifications Détaillées
-- [Structures et formats de données avec détails exacts]
-- [Interfaces utilisateur, APIs, ou protocoles avec exemples complets]
-- [Architecture système, composants, et intégrations]
-- [Algorithmes, logiques métier, ou workflows spécifiques...]
+## Spécifications
+- [Seulement les éléments explicites du prompt original]
 
-## Livrables Clés
-- [Code source, modules, composants avec noms et structures]
-- [Interfaces, pages, endpoints, ou fonctionnalités exposées]
-- [Configurations, déploiements, et environnements]
-- [Documentation, tests, et outils de validation...]
+## Livrables
+- [Seulement ce qui est explicitement demandé]
 
-## Critères de Succès Mesurables
-- [Critères fonctionnels vérifiables]
-- [Critères techniques quantifiables]
-- [Critères de qualité et performance...]
+## Critères de Succès
+- [Seulement si définis dans le prompt original, sinon "Fonctionnalité opérationnelle"]
 
-PRIORITÉ ABSOLUE: Aucun détail technique du prompt original ne doit être perdu ou simplifié."""
+"""
             
             try:
                 # Utiliser la même logique conditionnelle pour le Charter
@@ -566,7 +553,7 @@ Réponds uniquement avec un JSON valide:
             if use_pure_generation:
                 # Appel direct et pur pour le JSON
                 json_prompt = f"{milestone_prompt}\n\nRéponds uniquement avec un JSON valide."
-                raw_response = self._generate_pure(prompt=json_prompt, temperature=0.5, max_tokens=2048)
+                raw_response = self._generate_pure(prompt=json_prompt, temperature=0.5)
                 # Nettoyage manuel du JSON
                 cleaned = raw_response.strip()
                 if cleaned.startswith("```json"):
@@ -671,10 +658,23 @@ Réponds uniquement avec un JSON valide:
 """
         
         for milestone in self.milestones:
-            status = "✅" if milestone['status'] == 'completed' else "⏳"
+            if milestone['status'] == 'completed':
+                status = "✅"
+            elif milestone['status'] == 'partially_completed':
+                status = "⚠️"
+            else:
+                status = "⏳"
+            
             summary += f"\n{status} **{milestone['name']}**\n"
             summary += f"   - Agents: {', '.join(milestone['agents_required'])}\n"
             summary += f"   - Livrables: {', '.join(milestone.get('deliverables', []))}\n"
+            
+            # Ajouter des détails pour les jalons partiellement complétés
+            if milestone['status'] == 'partially_completed':
+                reason = milestone.get('partial_completion_reason', 'Raison non spécifiée')
+                attempts = milestone.get('correction_attempts', 0)
+                summary += f"   - ⚠️ **Statut**: Partiellement complété ({attempts} tentatives de correction)\n"
+                summary += f"   - **Raison**: {reason}\n"
         
         # Sauvegarder
         summary_path = Path("projects") / self.project_name / "PROJECT_SUMMARY.md"
@@ -959,6 +959,22 @@ Sois conservateur : ne propose des changements que si vraiment nécessaire."""
 **Contenu**: {content[:200]}{'...' if len(content) > 200 else ''}
 
 **Analyse**: Plan évalué comme {details.get('status', 'stable')}
+**État du projet**: {self.project_state['milestones_completed']}/{len(self.milestones)} jalons terminés
+
+---
+"""
+            
+            elif entry_type == "milestone_partially_completed":
+                milestone_name = details.get('milestone_name', 'Unknown')
+                attempts = details.get('correction_attempts', 0)
+                entry = f"""
+## {timestamp} - Jalon Partiellement Complété: {milestone_name}
+
+**Résultat**: ⚠️ Jalon complété partiellement après {attempts} tentatives de correction
+**Raison**: {content}
+**Statut**: Fonctionnel mais incomplet
+
+**Impact**: Le projet continue mais ce jalon pourrait nécessiter une attention future
 **État du projet**: {self.project_state['milestones_completed']}/{len(self.milestones)} jalons terminés
 
 ---
@@ -1259,6 +1275,15 @@ Réponds avec un JSON:
             current_milestone['status'] = 'completed'
             
         elif decision == 'request_rework' and correction_count < max_corrections:
+            # Vérifier le nombre de corrections imbriquées pour éviter les boucles infinies
+            supervisor_config = ConfigurationManager().get_default_config().get('agents', {}).get('supervisor', {})
+            max_nested_corrections = supervisor_config.get('max_nested_corrections', 2)
+            correction_depth = current_milestone['name'].count('Correction:')
+            if correction_depth >= max_nested_corrections:
+                self.logger.error(f"Trop de corrections imbriquées ({correction_depth}), approbation forcée pour éviter boucle infinie")
+                self._force_milestone_approval(current_milestone, "Limite de corrections imbriquées atteinte")
+                return
+            
             # Demande de correction
             self.logger.warning(f"Correction requise pour '{current_milestone['name']}' (tentative {correction_count + 1}/{max_corrections})")
             
@@ -1283,9 +1308,9 @@ Réponds avec un JSON:
                 self._force_milestone_approval(current_milestone, "Échec ajout correction")
             
         elif decision == 'request_rework' and correction_count >= max_corrections:
-            # Trop de tentatives de correction - forcer l'approbation
-            self.logger.error(f"Trop de tentatives de correction ({correction_count}), approbation forcée")
-            self._force_milestone_approval(current_milestone, f"Limite de corrections atteinte ({max_corrections})")
+            # Trop de tentatives de correction - stratégie d'échec gracieuse
+            self.logger.error(f"Trop de tentatives de correction ({correction_count}), passage en mode partiellement complété")
+            self._mark_milestone_partially_completed(current_milestone, f"Limite de corrections atteinte ({max_corrections}) - Jalon partiellement fonctionnel")
             
         elif decision == 'adjust_plan':
             # Ajustement du plan - modifier un jalon futur
@@ -1331,3 +1356,41 @@ Réponds avec un JSON:
         
         self.current_milestone_index += 1
         self.project_state['milestones_completed'] += 1
+    
+    def _mark_milestone_partially_completed(self, milestone: Dict[str, Any], reason: str) -> None:
+        """
+        Marque un jalon comme partiellement complété après plusieurs échecs.
+        Stratégie d'échec gracieuse pour éviter les blocages.
+        """
+        self.logger.warning(f"Jalon '{milestone['name']}' marqué comme partiellement complété: {reason}")
+        
+        # Journaliser la completion partielle
+        self._create_journal_entry(
+            'milestone_partially_completed',
+            reason,
+            {
+                'milestone_name': milestone['name'],
+                'correction_attempts': milestone.get('correction_attempts', 0),
+                'status': 'partial'
+            }
+        )
+        
+        # Marquer comme partiellement complété et avancer
+        milestone['status'] = 'partially_completed'
+        milestone['partial_completion_reason'] = reason
+        milestone['completion_level'] = 'partial'
+        
+        self.current_milestone_index += 1
+        self.project_state['milestones_completed'] += 1
+        
+        # Créer une note pour les jalons suivants
+        if self.rag_engine:
+            self.rag_engine.index_to_working_memory(
+                f"Jalon {milestone['name']} partiellement complété: {reason}",
+                {
+                    'type': 'milestone_partial_completion',
+                    'agent_name': self.name,
+                    'priority': 'high',
+                    'milestone_name': milestone['name']
+                }
+            )

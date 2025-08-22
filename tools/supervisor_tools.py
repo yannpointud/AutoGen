@@ -52,11 +52,19 @@ def tool_get_progress_report(agent, parameters: Dict[str, Any]):
         completed = agent.project_state['milestones_completed']
         total = len(agent.milestones)
         
+        # Calculer la progression réelle en tenant compte des jalons partiels
+        fully_completed = len([m for m in agent.milestones if m.get('status') == 'completed'])
+        partially_completed = len([m for m in agent.milestones if m.get('status') == 'partially_completed'])
+        
+        # Les jalons partiels comptent pour 0.7 de la progression
+        effective_completion = fully_completed + (partially_completed * 0.7)
+        
         report = {
             'project_name': agent.project_name,
             'status': agent.project_state['status'],
-            'progress_percentage': (completed / total * 100) if total > 0 else 0,
-            'completed_milestones': completed,
+            'progress_percentage': (effective_completion / total * 100) if total > 0 else 0,
+            'completed_milestones': fully_completed,
+            'partially_completed_milestones': partially_completed,
             'total_milestones': total,
             'current_milestone': agent.milestones[agent.current_milestone_index]['name'] 
                                if agent.current_milestone_index < total else 'Terminé',
@@ -67,12 +75,20 @@ def tool_get_progress_report(agent, parameters: Dict[str, Any]):
         if include_details:
             report['milestones'] = []
             for m in agent.milestones:
-                report['milestones'].append({
+                milestone_details = {
                     'id': m['id'],
                     'name': m['name'],
                     'status': m.get('status', 'pending'),
                     'agents': m.get('agents_required', [])
-                })
+                }
+                
+                # Ajouter des détails pour les jalons partiellement complétés
+                if m.get('status') == 'partially_completed':
+                    milestone_details['partial_completion_reason'] = m.get('partial_completion_reason', 'Raison non spécifiée')
+                    milestone_details['correction_attempts'] = m.get('correction_attempts', 0)
+                    milestone_details['completion_level'] = 'partial'
+                
+                report['milestones'].append(milestone_details)
         
         # Sauvegarder le rapport
         report_path = Path("projects") / agent.project_name / "progress_report.json"

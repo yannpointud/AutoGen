@@ -6,6 +6,16 @@ Le format est basé sur [Keep a Changelog](https://keepachangelog.com/fr/1.0.0/)
 et ce projet adhère au [Versioning Sémantique](https://semver.org/spec/v2.0.0.html).
 
 
+## [1.2.6] - 2025-08-22
+### 🐛 Corrigé
+- **Generation Projet Charter inadéquate avec d'autres modeles**
+  - Modification du prompt de génération
+- **BUG qui empechait l'envoi de rapport au superviseur**
+  - Erreur d'indentation dans `base_agent.py` 😅
+  - Erreurs de parsing JSON
+### 🎉 Ajouté
+  - Précision du nombre de caracteres sur chaque REQUEST (DEBUG) et estimation tokens
+  - Parametre de limitation du nombre de corrections initié par superviseur pour eviter boucle infinie
 
 ## [1.2.5] - 2025-08-19
 ### 🐛 Corrigé

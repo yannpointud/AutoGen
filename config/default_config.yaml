@@ -11,7 +11,7 @@ general:
   conversation_compression_threshold: 60000  #  Seuil en caractères pour déclencher la compression de l'historique 60000 moitié du max appel API
   max_tokens: 32768
   # Rate limiting global pour tous les appels API
-  api_rate_limit_interval: 1.5  # Secondes entre chaque appel API (tous fournisseurs confondus) 
+  api_rate_limit_interval: 2  # Secondes entre chaque appel API (tous fournisseurs confondus) 
 
 llm:
   default_model: "mistral-small-latest"
@@ -84,12 +84,13 @@ agents:
   supervisor:
     role: "Superviseur et coordinateur principal du projet"
     personality: "Méthodique, stratégique, orienté résultats. Excellent communicateur qui sait déléguer efficacement."
-    model: "magistral-medium-latest"
+    model: "mistral-small-latest"
     max_milestones: 15
     allow_dynamic_milestones: true
     max_corrections: 3
+    max_nested_corrections: 2  # Limite du nombre de corrections imbriquées (Correction: Correction: ...)
     guidelines:
-      - "Analyser le projet et identifier la complexité réelle (2-15 jalons selon besoins)"
+      - "Analyser le projet et identifier la complexité réelle"
       - "Créer des jalons cohérents et atteignables par un LLM en une fois"
       - "Déléguer les tâches aux agents appropriés selon leurs forces"
       - "Superviser sans micro-manager"
@@ -100,7 +101,7 @@ agents:
   analyst:
     role: "Expert en analyse, architecture et qualité. Responsable de la conception complète et des standards."
     personality: "Rigoureux, visionnaire. Équilibre parfait entre théorie et pratique."
-    model: "magistral-medium-latest"
+    model: "mistral-small-latest"
     guidelines:
       - "COMMENCER par identifier le langage/framework approprié selon le projet"
       - "Spécifier la stack technique dans les premières spécifications"
@@ -181,7 +182,7 @@ rag:
     keyword_extraction:
       enabled: true                    # Active l'extraction automatique de mots-clés depuis les prompts
       model: "mistral-small-latest"    # Modèle LLM rapide et économique pour extraction
-      max_tokens: 30                   # Limite courte pour les mots-clés (économise tokens)
+      max_tokens: 50                   # Limite courte pour les mots-clés (économise tokens)
       temperature: 0.1                 # Sortie déterministe et précise
       cache_ttl: 600                   # Cache 10min (mots-clés stables dans une session)
       timeout: 10                      # Timeout court pour extraction rapide
