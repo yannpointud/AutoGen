@@ -9,10 +9,17 @@ from pathlib import Path
 from agents.base_agent import ToolResult
 
 
+def _extract_filename_from_path(filename: str) -> str:
+    """Extrait le nom du fichier si un chemin complet est fourni."""
+    if '/' in filename:
+        return Path(filename).name
+    return filename
+
+
 def tool_create_document(agent, parameters: Dict[str, Any]) -> ToolResult:
     """Crée un document markdown."""
     try:
-        filename = parameters.get('filename', 'document')
+        filename = _extract_filename_from_path(parameters.get('filename', 'document'))
         content = parameters.get('content', '')
         
         # Nettoyer le nom de fichier

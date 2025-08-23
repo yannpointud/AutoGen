@@ -6,6 +6,15 @@ Le format est basé sur [Keep a Changelog](https://keepachangelog.com/fr/1.0.0/)
 et ce projet adhère au [Versioning Sémantique](https://semver.org/spec/v2.0.0.html).
 
 
+## [1.3.0] - 2025-08-22
+### 🎉 Ajouté
+- **Fonctionnalité adjust_plan du superviseur**
+  - Ajout de la capacité au superviseur a modifier les prochains jalons au lieu de simplement en ajouter en cas de probleme
+  - Analyse fine des rapports reçus non conformes
+  - Meilleure gestion des rapports manuel et automatiques recus
+  - Evaluation lors de fin de jalon des rapports
+  - Cas des boucles longues conservées pour etre résolues par question user plus tard
+
 ## [1.2.6] - 2025-08-22
 ### 🐛 Corrigé
 - **Generation Projet Charter inadéquate avec d'autres modeles**

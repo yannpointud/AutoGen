@@ -8,6 +8,37 @@ from datetime import datetime
 from agents.base_agent import ToolResult
 
 
+def _analyze_manual_content_for_completion(content: str) -> str:
+    """Analyse sémantique d'un rapport manuel pour déterminer le self_assessment."""
+    content_lower = content.lower()
+    
+    # Mots-clés de succès/completion
+    success_keywords = ['terminé', 'succès', 'réussi', 'complété', '100%', 'fini', 'achevé', 'complet']
+    error_keywords = ['erreur', 'échec', 'problème', 'impossible', 'failed', 'échoué', 'bloqué']
+    
+    if any(word in content_lower for word in error_keywords):
+        return 'failed'
+    elif any(word in content_lower for word in success_keywords):
+        return 'compliant'
+    else:
+        return 'unknown'  # Cas ambigus
+
+
+def _generate_message_from_structured_report(structured_report: Dict[str, Any]) -> str:
+    """Génère un message descriptif depuis un rapport structuré."""
+    self_assessment = structured_report.get('self_assessment', 'unknown')
+    artifacts_count = len(structured_report.get('artifacts_created', []))
+    
+    if self_assessment == 'compliant':
+        return f"Tâche terminée avec succès ({artifacts_count} artefacts créés)"
+    elif self_assessment == 'partial':
+        return f"Tâche partiellement terminée ({artifacts_count} artefacts créés)"
+    elif self_assessment == 'failed':
+        return "Tâche échouée - aucun artefact créé"
+    else:
+        return f"État de la tâche indéterminé ({artifacts_count} artefacts créés)"
+
+
 def tool_search_context(agent, parameters: Dict[str, Any]) -> ToolResult:
     """Recherche du contexte pertinent dans le RAG."""
     try:
@@ -120,13 +151,28 @@ def tool_report_to_supervisor(agent, parameters: Dict[str, Any]) -> ToolResult:
         report_type = parameters.get('report_type', 'progress')
         content = parameters.get('content', {})
         
+        # Normaliser le format du content
+        if isinstance(content, str):
+            # Format manuel → Normaliser
+            normalized_content = {
+                'type': 'manual',
+                'message': content,
+                'self_assessment': _analyze_manual_content_for_completion(content)
+            }
+        else:
+            # Format automatique → Ajouter type et message si manquants
+            normalized_content = dict(content)  # Copie
+            normalized_content['type'] = 'automatic'
+            if 'message' not in normalized_content:
+                normalized_content['message'] = _generate_message_from_structured_report(normalized_content)
+        
         # Construire le rapport
         report = {
             'type': report_type,
             'agent': agent.name,
             'timestamp': datetime.now().isoformat(),
             'task_id': agent.state.get('current_task_id'),
-            'content': content
+            'content': normalized_content
         }
         
         # Envoyer au superviseur

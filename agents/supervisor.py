@@ -61,6 +61,10 @@ class Supervisor(BaseAgent):
         self.agents = {}
         self.current_milestone_index = 0
         
+        # Buffer des rapports par jalon
+        self.current_milestone_reports = []
+        self.current_milestone_id = None
+        
         # État du projet
         self.project_state = {
             'status': 'initialized',
@@ -554,13 +558,8 @@ Réponds uniquement avec un JSON valide:
                 # Appel direct et pur pour le JSON
                 json_prompt = f"{milestone_prompt}\n\nRéponds uniquement avec un JSON valide."
                 raw_response = self._generate_pure(prompt=json_prompt, temperature=0.5)
-                # Nettoyage manuel du JSON
-                cleaned = raw_response.strip()
-                if cleaned.startswith("```json"):
-                    cleaned = cleaned[7:]
-                if cleaned.endswith("```"):
-                    cleaned = cleaned[:-3]
-                response = json.loads(cleaned.strip())
+                # Utiliser la méthode utilitaire partagée
+                response = self._parse_json_from_llm_response(raw_response)
             else:
                 # Utilise la méthode standard avec RAG pour la ré-analyse
                 response = self.generate_json_with_context(
@@ -915,13 +914,88 @@ Sois conservateur : ne propose des changements que si vraiment nécessaire."""
             self.logger.error(f"Erreur lors de la mise à jour du journal de bord: {str(e)}")
     
     def receive_report(self, agent_name: str, report: Dict[str, Any]) -> None:
-        """Reçoit un rapport d'un autre agent et évalue si le plan doit être modifié."""
+        """Reçoit un rapport d'un autre agent et gère le buffer par jalon."""
         super().receive_report(agent_name, report)
 
-        # Évaluer le plan après réception du rapport
-        report_content = f"Agent {agent_name} rapport {report.get('type', 'status')}: {str(report.get('content', {}))}"
-        self._evaluate_plan_after_interaction('report', report_content)
+        # Détecter le jalon actuel depuis le rapport
+        reported_milestone = self._extract_milestone_from_report(agent_name, report)
+        
+        # Reset du buffer si changement de jalon
+        if reported_milestone != self.current_milestone_id:
+            self.logger.info(f"Changement de jalon détecté: {self.current_milestone_id} → {reported_milestone}")
+            self._reset_milestone_buffer(reported_milestone)
+        
+        # Stocker tous les rapports dans le buffer
+        self.current_milestone_reports.append(report)
+        self.logger.debug(f"Rapport de {agent_name} stocké dans le buffer ({len(self.current_milestone_reports)} rapports)")
+        
+        # Évaluer UNIQUEMENT sur rapport automatique
+        content = report.get('content', {})
+        if content.get('type') == 'automatic':
+            self.logger.info(f"Rapport automatique de {agent_name} reçu - Déclenchement de l'évaluation du jalon")
+            self._evaluate_milestone_with_context()
+            # Ne pas reset le buffer ici - garde historique pour debugging
     
+    def _extract_milestone_from_report(self, agent_name: str, report: Dict[str, Any]) -> str:
+        """Extrait l'ID du jalon depuis un rapport."""
+        # Essayer d'abord depuis le task_id
+        task_id = report.get('task_id')
+        if task_id and hasattr(self, 'agents') and agent_name in self.agents:
+            agent = self.agents[agent_name]
+            if hasattr(agent, 'current_milestone_id'):
+                return agent.current_milestone_id
+        
+        # Fallback: utiliser l'index du jalon actuel
+        if self.current_milestone_index < len(self.milestones):
+            return self.milestones[self.current_milestone_index].get('milestone_id', f'milestone_{self.current_milestone_index}')
+        
+        return 'unknown'
+    
+    def _reset_milestone_buffer(self, new_milestone_id: str) -> None:
+        """Reset le buffer des rapports pour un nouveau jalon."""
+        self.current_milestone_id = new_milestone_id
+        self.current_milestone_reports = []
+        self.logger.debug(f"Buffer des rapports réinitialisé pour le jalon {new_milestone_id}")
+    
+    def _evaluate_milestone_with_context(self) -> None:
+        """Évalue le jalon avec le contexte complet de tous les rapports."""
+        try:
+            # Séparer les rapports par type
+            automatic_reports = [r for r in self.current_milestone_reports if r.get('content', {}).get('type') == 'automatic']
+            manual_reports = [r for r in self.current_milestone_reports if r.get('content', {}).get('type') == 'manual']
+            
+            self.logger.info(f"Évaluation du jalon {self.current_milestone_id} avec {len(automatic_reports)} rapports automatiques et {len(manual_reports)} rapports manuels")
+            
+            # Analyser le dernier rapport automatique pour la décision technique
+            if automatic_reports:
+                latest_automatic = automatic_reports[-1]
+                technical_assessment = latest_automatic.get('content', {}).get('self_assessment', 'unknown')
+                
+                # Évaluer seulement si problème technique détecté
+                if technical_assessment != 'compliant':
+                    self.logger.info(f"Évaluation nécessaire - Assessment technique: {technical_assessment}")
+                    self._trigger_plan_evaluation_with_context(latest_automatic, manual_reports)
+                else:
+                    self.logger.info(f"Jalon {self.current_milestone_id} terminé avec succès - Pas d'évaluation nécessaire")
+            
+        except Exception as e:
+            self.logger.error(f"Erreur lors de l'évaluation du jalon: {str(e)}")
+    
+    def _trigger_plan_evaluation_with_context(self, automatic_report: Dict[str, Any], manual_reports: List[Dict[str, Any]]) -> None:
+        """Déclenche l'évaluation du plan avec le contexte complet."""
+        # Construire le contexte enrichi
+        context_parts = [f"Rapport technique: {automatic_report.get('content', {}).get('message', 'Non spécifié')}"]
+        
+        if manual_reports:
+            context_parts.append("Contexte des communications:")
+            for i, manual_report in enumerate(manual_reports, 1):
+                agent_name = manual_report.get('agent', 'Unknown')
+                message = manual_report.get('content', {}).get('message', 'Non spécifié')
+                context_parts.append(f"  {i}. {agent_name}: {message}")
+        
+        enriched_context = "\n".join(context_parts)
+        self.logger.info(f"Déclenchement de l'évaluation avec contexte enrichi")
+        self._evaluate_plan_after_interaction('milestone_completion', enriched_context)
 
     
     def _create_journal_entry(self, entry_type: str, content: str, details: Dict[str, Any] = None) -> None:
@@ -1276,7 +1350,7 @@ Réponds avec un JSON:
             
         elif decision == 'request_rework' and correction_count < max_corrections:
             # Vérifier le nombre de corrections imbriquées pour éviter les boucles infinies
-            supervisor_config = ConfigurationManager().get_default_config().get('agents', {}).get('supervisor', {})
+            supervisor_config = default_config.get('agents', {}).get('supervisor', {})
             max_nested_corrections = supervisor_config.get('max_nested_corrections', 2)
             correction_depth = current_milestone['name'].count('Correction:')
             if correction_depth >= max_nested_corrections:
@@ -1313,23 +1387,37 @@ Réponds avec un JSON:
             self._mark_milestone_partially_completed(current_milestone, f"Limite de corrections atteinte ({max_corrections}) - Jalon partiellement fonctionnel")
             
         elif decision == 'adjust_plan':
-            # Ajustement du plan - modifier un jalon futur
+            # SÉQUENCE CORRIGÉE POUR ÉVITER DE SAUTER DES JALONS
             self.logger.info(f"Ajustement du plan requis suite au jalon '{current_milestone['name']}'")
             
-            # Pour l'instant, approuver le jalon actuel et logger l'ajustement
-            # L'implémentation complète nécessiterait une logique plus complexe
+            # ÉTAPE 1: Finaliser le jalon déclencheur AVANT adjust_plan
+            # Ceci évite le conflit d'index avec _force_milestone_approval
+            current_milestone['status'] = 'completed'
+            current_milestone['triggered_plan_adjustment'] = True
+            current_milestone['adjustment_reason'] = reason
+            
+            # Avancer l'index et incrémenter le compteur
+            self.current_milestone_index += 1
+            self.project_state['milestones_completed'] += 1
+            
+            # Journaliser la finalisation du jalon déclencheur
             self._create_journal_entry(
-                'plan_adjustment_needed',
-                f"Ajustement requis: {reason}",
+                'milestone_completed_trigger_adjustment',
+                f"Jalon '{current_milestone['name']}' complété et déclenche l'ajustement: {reason}",
                 {
                     'milestone_name': current_milestone['name'],
-                    'recommended_action': verification.get('recommended_action', ''),
-                    'confidence': confidence
+                    'trigger_reason': reason,
+                    'milestones_completed': self.project_state['milestones_completed']
                 }
             )
             
-            # Approuver et continuer
-            self._force_milestone_approval(current_milestone, f"Plan ajusté: {reason}")
+            # ÉTAPE 2: Maintenant ajuster le plan 
+            # adjust_plan va recalculer current_milestone_index = len(completed_milestones)
+            # ce qui le repositionne correctement sur le premier nouveau jalon
+            self.adjust_plan(reason)
+            
+            # Note: Pas besoin de _force_milestone_approval - nous avons géré manuellement
+            # L'atomicité de l'opération est garantie
             
         else:
             # Cas non géré - approuver par défaut
@@ -1393,4 +1481,157 @@ Réponds avec un JSON:
                     'priority': 'high',
                     'milestone_name': milestone['name']
                 }
+            )
+    
+    def adjust_plan(self, reason: str) -> None:
+        """
+        Réajuste le plan complet suite à une décision adjust_plan.
+        Préserve les jalons complétés et régénère les jalons restants.
+        
+        ATTENTION: Cette méthode assume que le jalon déclencheur est déjà finalisé
+        avant l'appel (status='completed', index incrémenté).
+        
+        Gestion des cas limites :
+        - 0 nouveaux jalons générés : le projet se termine naturellement
+        - Tous jalons complétés : le projet se termine 
+        - Jalons partially_completed : conservés comme les completed
+        """
+        try:
+            self.logger.info(f"Début adjust_plan: {reason}")
+            
+            # 1. Sauvegarder les jalons complétés/partiels avec toutes leurs métadonnées
+            completed_milestones = []
+            for m in self.milestones:
+                if m.get('status') in ['completed', 'partially_completed']:
+                    completed_milestones.append(m.copy())  # Préserver toutes les métadonnées
+            
+            completed_names = [m['name'] for m in completed_milestones]
+            self.logger.info(f"Jalons préservés ({len(completed_milestones)}): {completed_names}")
+            
+            # 2. Prompt de régénération (réutilise pattern _create_milestones_from_analysis)
+            regeneration_prompt = f"""Le plan de projet initial doit être ajusté à cause de : {reason}
+
+Les jalons suivants sont déjà complétés et immuables : {completed_names}
+
+En te basant sur le prompt original et le Project Charter, régénère la suite du plan (les jalons restants) pour atteindre l'objectif final.
+
+--- DEMANDE INITIALE DE L'UTILISATEUR ---
+{self.project_prompt}
+--- FIN DE LA DEMANDE INITIALE ---
+
+--- PROJECT CHARTER FORMALISÉ ---
+{self._get_project_charter_from_file()}
+--- FIN DU PROJECT CHARTER ---
+
+Réponds uniquement avec un JSON contenant la nouvelle liste des jalons futurs:
+{{
+    "milestones": [
+        {{
+            "id": "sera recalculé automatiquement", 
+            "name": "Nom du jalon", 
+            "description": "Description détaillée", 
+            "agents_required": ["analyst", "developer"], 
+            "deliverables": ["livrable1", "livrable2"],
+            "estimated_duration": "durée estimée",
+            "dependencies": []
+        }}
+    ]
+}}"""
+
+            # 3. Générer nouveaux jalons (même logique conditionnelle que création initiale)
+            try:
+                # Utiliser génération pure ou avec contexte selon l'état
+                is_initial_context = len(completed_milestones) == 0
+                if is_initial_context:
+                    raw_response = self._generate_pure(prompt=regeneration_prompt, temperature=0.5)
+                    new_milestones_data = self._parse_json_from_llm_response(raw_response)
+                else:
+                    new_milestones_data = self.generate_json_with_context(
+                        prompt=regeneration_prompt, temperature=0.5
+                    )
+            except Exception as e:
+                self.logger.error(f"Erreur génération nouveaux jalons: {e}")
+                # Fallback: garder le plan existant et continuer
+                self._create_journal_entry(
+                    'adjust_plan_failed',
+                    f"Échec régénération jalons: {e}. Plan conservé.",
+                    {'trigger_reason': reason, 'error': str(e)}
+                )
+                return
+            
+            # 4. Traitement et validation des nouveaux jalons
+            new_milestones_raw = new_milestones_data.get('milestones', [])
+            
+            # Cas limite : 0 nouveaux jalons = projet se termine naturellement
+            if not new_milestones_raw:
+                self.logger.info("Aucun nouveau jalon généré - projet se termine")
+                self.milestones = completed_milestones
+                self.current_milestone_index = len(completed_milestones)  # Index au-delà du dernier
+                self._create_journal_entry(
+                    'plan_adjustment_no_new_milestones',
+                    f"Plan ajusté sans nouveaux jalons: {reason}. Projet se termine.",
+                    {'trigger_reason': reason, 'completed_milestones_count': len(completed_milestones)}
+                )
+                return
+            
+            # Générer IDs séquentiels pour éviter conflits
+            next_id = max([m['id'] for m in completed_milestones], default=0) + 1
+            new_milestones = []
+            
+            for i, m in enumerate(new_milestones_raw):
+                validated_milestone = {
+                    'id': next_id + i,
+                    'milestone_id': f'milestone_{next_id + i}',
+                    'name': m.get('name', f'Jalon {next_id + i}'),
+                    'description': m.get('description', ''),
+                    'agents_required': [a for a in m.get('agents_required', ['analyst']) 
+                                      if a in ['analyst', 'developer']],
+                    'deliverables': m.get('deliverables', []),
+                    'estimated_duration': m.get('estimated_duration', 'À estimer'),
+                    'dependencies': m.get('dependencies', []),
+                    'status': 'pending'
+                }
+                
+                # Validation supplémentaire
+                if not validated_milestone['agents_required']:
+                    validated_milestone['agents_required'] = ['analyst']
+                
+                new_milestones.append(validated_milestone)
+            
+            # 5. Reconstruction complète de la liste des jalons
+            self.milestones = completed_milestones + new_milestones
+            
+            # 6. **CRITIQUE**: Recalcul de l'index courant basé sur les jalons complétés
+            # L'index doit pointer sur le premier nouveau jalon
+            self.current_milestone_index = len(completed_milestones)
+            
+            self.logger.info(f"Index recalculé: {self.current_milestone_index} (premier nouveau jalon)")
+            
+            # 7. Journalisation complète avec métriques détaillées
+            self._create_journal_entry(
+                'plan_adjustment',
+                f"Plan ajusté: {reason}. {len(completed_milestones)} jalons préservés, {len(new_milestones)} nouveaux jalons générés.",
+                {
+                    'trigger_reason': reason,
+                    'completed_milestones_count': len(completed_milestones),
+                    'new_milestones_count': len(new_milestones),
+                    'total_milestones': len(self.milestones),
+                    'current_index': self.current_milestone_index,
+                    'completed_milestones': completed_names,
+                    'new_milestones': [m['name'] for m in new_milestones]
+                }
+            )
+            
+            # 8. Mise à jour RAG avec contexte enrichi
+            self._update_plan_in_rag(f"Plan ajusté ({reason}): {len(new_milestones)} nouveaux jalons")
+            
+            self.logger.info(f"adjust_plan terminé avec succès: {len(new_milestones)} nouveaux jalons, index={self.current_milestone_index}")
+            
+        except Exception as e:
+            self.logger.error(f"ERREUR CRITIQUE adjust_plan: {e}", exc_info=True)
+            # Stratégie de fallback: journaliser et continuer avec plan existant
+            self._create_journal_entry(
+                'adjust_plan_critical_error',
+                f"Erreur critique lors de l'ajustement: {e}. Plan conservé pour éviter corruption.",
+                {'trigger_reason': reason, 'critical_error': str(e)}
             )

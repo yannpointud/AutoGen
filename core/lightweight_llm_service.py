@@ -83,7 +83,7 @@ Mots-clés:'''
             
             # Nettoyer et valider le résultat
             keywords = result.strip().lower()
-            if not keywords or len(keywords) > 200:  # Validation basique
+            if not keywords or len(keywords) > 500:  # Validation basique
                 self.logger.warning(f"Résultat d'extraction invalide: '{keywords[:50]}...'")
                 return prompt[:100]  # Fallback
             

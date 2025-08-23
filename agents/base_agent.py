@@ -700,21 +700,17 @@ Format OBLIGATOIRE:
 EXEMPLES CONCRETS:
 [
   {{
-    "tool": "implement_code",
+    "tool": "search_context",
     "parameters": {{
-      "filename": "main.py",
-      "description": "Module principal",
-      "language": "python", 
-      "code": "def main():\\n    print('Hello World')"
+      "query": "recherche de contexte pertinent",
+      "top_k": 5
     }}
   }},
   {{
-    "tool": "create_tests",
+    "tool": "create_document",
     "parameters": {{
-      "filename": "test_main.py",
-      "target_file": "main.py",
-      "test_framework": "pytest",
-      "code": "def test_main():\\n    assert True"
+      "filename": "specifications",
+      "content": "## Spécifications\\n\\nContenu du document"
     }}
   }},
   {{
@@ -1384,10 +1380,10 @@ Guidelines comportementales:
         if hasattr(response, 'text'):
             # Format objet avec attribut text
             response = response.text
-            self.logger.debug("Extraction text depuis objet réponse (context enriched)")
+            self.logger.debug("Extraction directe de la réponse")
         elif not isinstance(response, str):
             response = str(response)
-            self.logger.warning(f"Type inattendu {type(response)}, conversion string (context enriched)")
+            self.logger.warning(f"Type LLM de raisonnement {type(response)}, conversion réponse")
         
         # 8. Ajouter la réponse à l'historique
         self.add_message_to_memory("assistant", response)

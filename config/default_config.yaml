@@ -8,7 +8,7 @@ general:
   retry_delay: 5
   llm_timeout: 120  # Réduire le timeout pour éviter les blocages
   conversation_memory_size: 6  # correspond aux deux derniers echanges request+responses
-  conversation_compression_threshold: 60000  #  Seuil en caractères pour déclencher la compression de l'historique 60000 moitié du max appel API
+  conversation_compression_threshold: 50000  #  Seuil en caractères pour déclencher la compression de l'historique 60000 moitié du max appel API
   max_tokens: 32768
   # Rate limiting global pour tous les appels API
   api_rate_limit_interval: 2  # Secondes entre chaque appel API (tous fournisseurs confondus) 

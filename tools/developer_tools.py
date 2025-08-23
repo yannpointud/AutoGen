@@ -9,10 +9,17 @@ from pathlib import Path
 from agents.base_agent import ToolResult
 
 
+def _extract_filename_from_path(filename: str) -> str:
+    """Extrait le nom du fichier si un chemin complet est fourni."""
+    if '/' in filename:
+        return Path(filename).name
+    return filename
+
+
 def tool_implement_code(agent, parameters: Dict[str, Any]) -> ToolResult:
     """Implémente du code."""
     try:
-        filename = parameters.get('filename', 'module.py')
+        filename = _extract_filename_from_path(parameters.get('filename', 'module.py'))
         description = parameters.get('description', '')
         language = parameters.get('language')
         code = parameters.get('code', '')
@@ -69,7 +76,7 @@ def tool_implement_code(agent, parameters: Dict[str, Any]) -> ToolResult:
 def tool_create_tests(agent, parameters: Dict[str, Any]) -> ToolResult:
     """Crée des tests."""
     try:
-        filename = parameters.get('filename', 'test_module.py')
+        filename = _extract_filename_from_path(parameters.get('filename', 'test_module.py'))
         target_file = parameters.get('target_file', '')
         test_framework = parameters.get('test_framework', 'pytest')
         code = parameters.get('code', '')
