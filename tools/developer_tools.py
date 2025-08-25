@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from agents.base_agent import ToolResult
+from utils.logger import log_file_operation
 
 
 def _extract_filename_from_path(filename: str) -> str:
@@ -51,6 +52,7 @@ def tool_implement_code(agent, parameters: Dict[str, Any]) -> ToolResult:
         
         # Sauvegarder
         file_path.write_text(full_code, encoding='utf-8')
+        log_file_operation(agent.logger, file_path, "créé")
         
         # Indexer dans le RAG
         if agent.rag_engine:
@@ -104,6 +106,7 @@ def tool_create_tests(agent, parameters: Dict[str, Any]) -> ToolResult:
         # Sauvegarder dans le dossier tests
         file_path = agent.tests_path / safe_filename
         file_path.write_text(full_code, encoding='utf-8')
+        log_file_operation(agent.logger, file_path, "créé")
         
         # Indexer dans le RAG
         if agent.rag_engine:
@@ -148,6 +151,7 @@ def tool_create_project_file(agent, parameters: Dict[str, Any]) -> ToolResult:
         
         # Sauvegarder
         file_path.write_text(content, encoding='utf-8')
+        log_file_operation(agent.logger, file_path, "créé")
         
         # Indexer seulement certains types de fichiers
         indexable_extensions = ['.json', '.yaml', '.yml', '.toml', '.ini', '.cfg']

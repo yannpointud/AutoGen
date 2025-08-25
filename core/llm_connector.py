@@ -230,33 +230,50 @@ class MistralConnector(LLMConnector):
             params.pop('name', None)
             params.update(kwargs)
             
-            
-            # Appliquer le rate limiting global avant la requête
-            self._enforce_rate_limit()
-            
-            response = self.client.chat.complete(
-                model=self.model,
-                messages=messages,
-                **params
-            )
-            
-            result = response.choices[0].message.content
-            duration = time.time() - start_time
-            tokens_used = response.usage.total_tokens if hasattr(response, 'usage') else None
-            
-            # LOG COMPLET ET EXHAUSTIF
-            log_llm_complete_exchange(
-                agent_name=agent_context.get('agent_name', 'Unknown') if agent_context else 'Unknown',
-                model=self.model,
-                messages=messages,
-                response=result,
-                parameters=params,
-                tokens_used=tokens_used,
-                duration=duration,
-                context=agent_context or {}
-            )
-            
-            return result
+            try:
+                # Retry logic
+                max_retries = default_config['general']['max_retries']
+                retry_delay = default_config['general']['retry_delay']
+                
+                for attempt in range(max_retries):
+                    try:
+                        # Appliquer le rate limiting global avant la requête
+                        self._enforce_rate_limit()
+                        
+                        response = self.client.chat.complete(
+                            model=self.model,
+                            messages=messages,
+                            **params
+                        )
+                        
+                        result = response.choices[0].message.content
+                        duration = time.time() - start_time
+                        tokens_used = response.usage.total_tokens if hasattr(response, 'usage') else None
+                        
+                        # LOG COMPLET ET EXHAUSTIF
+                        log_llm_complete_exchange(
+                            agent_name=agent_context.get('agent_name', 'Unknown') if agent_context else 'Unknown',
+                            model=self.model,
+                            messages=messages,
+                            response=result,
+                            parameters=params,
+                            tokens_used=tokens_used,
+                            duration=duration,
+                            context=agent_context or {}
+                        )
+                        
+                        return result
+                        
+                    except Exception as e:
+                        if attempt < max_retries - 1:
+                            self.logger.warning(f"Tentative {attempt + 1} échouée: {str(e)}")
+                            time.sleep(retry_delay)
+                        else:
+                            raise
+                            
+            except Exception as e:
+                self.logger.error(f"Erreur lors de la génération Mistral avec messages: {str(e)}")
+                raise
     
 
     def generate_json(
@@ -367,23 +384,36 @@ class MistralEmbedConnector:
     def embed_texts(self, texts: List[str]) -> np.ndarray:
         """Génère des embeddings pour une liste de textes."""
         try:
-            # Appliquer le rate limiting global avant la requête
-            self._enforce_rate_limit()
+            # Retry logic
+            max_retries = default_config['general']['max_retries']
+            retry_delay = default_config['general']['retry_delay']
+            
+            for attempt in range(max_retries):
+                try:
+                    # Appliquer le rate limiting global avant la requête
+                    self._enforce_rate_limit()
+                                
+                    response = self.client.embeddings.create(
+                        model="mistral-embed",
+                        inputs=texts
+                    )
+                    
+                    # Convertir en numpy array
+                    embeddings = np.array([embedding.embedding for embedding in response.data])
+                    
+                    # Normaliser pour cosinus similarity
+                    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+                    normalized_embeddings = embeddings / norms
+                    
+                    return normalized_embeddings
+                    
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        self.logger.warning(f"Tentative {attempt + 1} échouée pour embeddings: {str(e)}")
+                        time.sleep(retry_delay)
+                    else:
+                        raise
                         
-            response = self.client.embeddings.create(
-                model="mistral-embed",
-                inputs=texts
-            )
-            
-            # Convertir en numpy array
-            embeddings = np.array([embedding.embedding for embedding in response.data])
-            
-            # Normaliser pour cosinus similarity
-            norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-            normalized_embeddings = embeddings / norms
-            
-            return normalized_embeddings
-            
         except Exception as e:
             self.logger.error(f"Erreur Mistral Embed: {str(e)}")
             raise
@@ -458,43 +488,56 @@ class DeepSeekConnector(LLMConnector):
             }
             
             try:
-                # Appliquer le rate limiting global avant la requête
-                self._enforce_rate_limit()
+                # Retry logic
+                max_retries = default_config['general']['max_retries']
+                retry_delay = default_config['general']['retry_delay']
                 
-                response = self.client.post(
-                    f"{self.base_url}/chat/completions",
-                    json=payload
-                )
-                response.raise_for_status()
-                
-                data = response.json()
-                result = data['choices'][0]['message']['content']
-                duration = time.time() - start_time
-                
-                # LOG COMPLET ET EXHAUSTIF
-                log_llm_complete_exchange(
-                    agent_name=agent_context.get('agent_name', 'Unknown') if agent_context else 'Unknown',
-                    model=self.model,
-                    messages=messages,
-                    response=result,
-                    parameters=params,
-                    tokens_used=data.get('usage', {}).get('total_tokens'),
-                    duration=duration,
-                    context=agent_context or {}
-                )
-                
-                # Log l'interaction (ancien système pour compatibilité)
-                log_llm_interaction(
-                    self.logger,
-                    prompt=prompt,
-                    response=result,
-                    model=self.model,
-                    tokens_used=data.get('usage', {}).get('total_tokens'),
-                    duration=duration
-                )
-                
-                return result
-                
+                for attempt in range(max_retries):
+                    try:
+                        # Appliquer le rate limiting global avant la requête
+                        self._enforce_rate_limit()
+                        
+                        response = self.client.post(
+                            f"{self.base_url}/chat/completions",
+                            json=payload
+                        )
+                        response.raise_for_status()
+                        
+                        data = response.json()
+                        result = data['choices'][0]['message']['content']
+                        duration = time.time() - start_time
+                        
+                        # LOG COMPLET ET EXHAUSTIF
+                        log_llm_complete_exchange(
+                            agent_name=agent_context.get('agent_name', 'Unknown') if agent_context else 'Unknown',
+                            model=self.model,
+                            messages=messages,
+                            response=result,
+                            parameters=params,
+                            tokens_used=data.get('usage', {}).get('total_tokens'),
+                            duration=duration,
+                            context=agent_context or {}
+                        )
+                        
+                        # Log l'interaction (ancien système pour compatibilité)
+                        log_llm_interaction(
+                            self.logger,
+                            prompt=prompt,
+                            response=result,
+                            model=self.model,
+                            tokens_used=data.get('usage', {}).get('total_tokens'),
+                            duration=duration
+                        )
+                        
+                        return result
+                        
+                    except Exception as e:
+                        if attempt < max_retries - 1:
+                            self.logger.warning(f"Tentative {attempt + 1} échouée: {str(e)}")
+                            time.sleep(retry_delay)
+                        else:
+                            raise
+                            
             except Exception as e:
                 self.logger.error(f"Erreur lors de la génération DeepSeek: {str(e)}")
                 raise
@@ -507,21 +550,61 @@ class DeepSeekConnector(LLMConnector):
         **kwargs
     ) -> str:
         """DeepSeek avec historique."""
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "stream": False,
-            **kwargs
-        }
         
-        # Appliquer le rate limiting global avant la requête
-        self._enforce_rate_limit()
-        
-        response = self.client.post(
-            f"{self.base_url}/chat/completions",
-            json=payload
-        )
-        return response.json()['choices'][0]['message']['content']
+        with _llm_execution_lock:
+            start_time = time.time()
+            
+            payload = {
+                "model": self.model,
+                "messages": messages,
+                "stream": False,
+                **kwargs
+            }
+            
+            try:
+                # Retry logic
+                max_retries = default_config['general']['max_retries']
+                retry_delay = default_config['general']['retry_delay']
+                
+                for attempt in range(max_retries):
+                    try:
+                        # Appliquer le rate limiting global avant la requête
+                        self._enforce_rate_limit()
+                        
+                        response = self.client.post(
+                            f"{self.base_url}/chat/completions",
+                            json=payload
+                        )
+                        response.raise_for_status()
+                        
+                        data = response.json()
+                        result = data['choices'][0]['message']['content']
+                        duration = time.time() - start_time
+                        
+                        # LOG COMPLET ET EXHAUSTIF
+                        log_llm_complete_exchange(
+                            agent_name=agent_context.get('agent_name', 'Unknown') if agent_context else 'Unknown',
+                            model=self.model,
+                            messages=messages,
+                            response=result,
+                            parameters=kwargs,
+                            tokens_used=data.get('usage', {}).get('total_tokens'),
+                            duration=duration,
+                            context=agent_context or {}
+                        )
+                        
+                        return result
+                        
+                    except Exception as e:
+                        if attempt < max_retries - 1:
+                            self.logger.warning(f"Tentative {attempt + 1} échouée: {str(e)}")
+                            time.sleep(retry_delay)
+                        else:
+                            raise
+                            
+            except Exception as e:
+                self.logger.error(f"Erreur lors de la génération DeepSeek avec messages: {str(e)}")
+                raise
     
 
 

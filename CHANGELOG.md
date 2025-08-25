@@ -6,30 +6,54 @@ Le format est basé sur [Keep a Changelog](https://keepachangelog.com/fr/1.0.0/)
 et ce projet adhère au [Versioning Sémantique](https://semver.org/spec/v2.0.0.html).
 
 
+## [1.3.2] - 2025-08-25
+
+### 🐛 Corrigé
+  - **Update tests unitaires** : Suite au dernieres modifications, refonte de plusieurs tests unitaires 
+
+### 🎉 Ajouté
+  - **Automatisation test unitaires** : `Runtest.sh`
+
+## [1.3.1] - 2025-08-22
+
+### 🐛 Corrigé
+  - **Retry LLM bug** : Correction du systeme de retry
+  - **Config LLM mistral small par defaut** : Pour itération rapide et économies de cout de dev
+  - **Bonus RAG manquants** : Ajout des pondérations manquantes et suppression des pondérations orphelines
+
+### 🔧 Amélioré  
+  - **Amelioration de l'affichage du logging** : Config RICH pour colorisation
+
 ## [1.3.0] - 2025-08-22
+
 ### 🎉 Ajouté
 - **Fonctionnalité adjust_plan du superviseur**
   - Ajout de la capacité au superviseur a modifier les prochains jalons au lieu de simplement en ajouter en cas de probleme
   - Analyse fine des rapports reçus non conformes
   - Meilleure gestion des rapports manuel et automatiques recus
   - Evaluation lors de fin de jalon des rapports
-  - Cas des boucles longues conservées pour etre résolues par question user plus tard
+  - ## **Important** : Actuellement le systeme peut boucler sur des echecs répétés si il ne parvient pas a contourner l'erreur par un meilleur plan
+  - ## Bug conservé pour etre résolu plus tard par une interaction utilisateur a developper
 
 ## [1.2.6] - 2025-08-22
+
 ### 🐛 Corrigé
 - **Generation Projet Charter inadéquate avec d'autres modeles**
   - Modification du prompt de génération
 - **BUG qui empechait l'envoi de rapport au superviseur**
   - Erreur d'indentation dans `base_agent.py` 😅
   - Erreurs de parsing JSON
+
 ### 🎉 Ajouté
   - Précision du nombre de caracteres sur chaque REQUEST (DEBUG) et estimation tokens
   - Parametre de limitation du nombre de corrections initié par superviseur pour eviter boucle infinie
 
 ## [1.2.5] - 2025-08-19
+
 ### 🐛 Corrigé
 - **Ratelimiter ne gérait pas la concurrence**
   - Serialisation des appels LLM pour eliminer les erreurs d'acces API concurrents
+
 ### 🔧 Amélioré
 - **Architecture des tools**
   - Descriptifs des tools du prompt user -> prompt systeme

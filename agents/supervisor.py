@@ -597,7 +597,7 @@ Réponds uniquement avec un JSON valide:
                 'description': 'Analyser les besoins et concevoir l\'architecture',
                 'agents_required': ['analyst'],
                 'deliverables': ['requirements.md', 'architecture.md'],
-                'estimated_duration': '2 heures',
+                'estimated_duration': '2 minutes',
                 'dependencies': [],
                 'status': 'pending'
             },
@@ -608,7 +608,7 @@ Réponds uniquement avec un JSON valide:
                 'description': 'Implémenter le code et les tests',
                 'agents_required': ['developer'],
                 'deliverables': ['src/', 'tests/'],
-                'estimated_duration': '4 heures',
+                'estimated_duration': '4 minutes',
                 'dependencies': [1],
                 'status': 'pending'
             },
@@ -619,7 +619,7 @@ Réponds uniquement avec un JSON valide:
                 'description': 'Finaliser la documentation et les configurations',
                 'agents_required': ['analyst', 'developer'],
                 'deliverables': ['README.md', 'config/'],
-                'estimated_duration': '1 heure',
+                'estimated_duration': '1 minutes',
                 'dependencies': [2],
                 'status': 'pending'
             }

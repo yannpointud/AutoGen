@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from agents.base_agent import ToolResult
+from utils.logger import log_file_operation
 
 
 def _extract_filename_from_path(filename: str) -> str:
@@ -45,6 +46,7 @@ def tool_create_document(agent, parameters: Dict[str, Any]) -> ToolResult:
         # Sauvegarder
         file_path = agent.docs_path / f"{filename}.md"
         file_path.write_text(full_content, encoding='utf-8')
+        log_file_operation(agent.logger, file_path, "créé")
         
         # Indexer dans le RAG
         if agent.rag_engine:
@@ -106,6 +108,7 @@ Ce diagramme représente l'architecture du système {agent.project_name}.
 """
         full_content = header + doc_content
         file_path.write_text(full_content, encoding='utf-8')
+        log_file_operation(agent.logger, file_path, "créé")
         
         return ToolResult('success', result={'created': str(file_path)}, artifact=str(file_path))
         
@@ -162,6 +165,7 @@ def tool_generate_configuration_files(agent, parameters: Dict[str, Any]) -> Tool
         
         # Sauvegarder
         file_path.write_text(content, encoding='utf-8')
+        log_file_operation(agent.logger, file_path, "créé")
         
         return ToolResult('success', result={'created': str(file_path)}, artifact=str(file_path))
         

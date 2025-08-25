@@ -5,6 +5,9 @@
 
 🚀 Plateforme multi-agents intelligente qui orchestre des agents IA spécialisés pour concevoir, développer et documenter des projets logiciels complets de manière autonome.
 
+*Note : Ce projet n'est pas basé sur le framework AutoGen de Microsoft*
+*A l'origine je voulais l'implémenter mais frustré par ses limitations, je me suis décidé a repartir from scratch*
+*Le nom du projet est resté comme un clin d'oeil  a ce parcours* 😉
 
 ## ✨ Fonctionnalités principales
 

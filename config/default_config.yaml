@@ -195,7 +195,7 @@ rag:
       max_output_length: 2000  # Résumé substantiel
       temperature: 0.1
       timeout: 30
-      max_tokens_summary: 200  # Nombre max de tokens pour les résumés d'agents/milestones
+      max_tokens_summary: 200  # Nombre max de tokens pour les résumés d'agents/milestones/Compression Rag
   
   score_weights:
     similarity: 0.6
@@ -205,10 +205,15 @@ rag:
   source_bonus:
     project_file: 0.9
     summary: 0.8
-    memory: 0.7
     log_entry: 0.5
     discovery: 0.6
-    conversation: 0.4
+    source_code: 0.85
+    project_plan: 0.9
+    project_journal: 0.75
+    supervisor_report: 0.65
+    plan_modification: 0.7
+    milestone_partial_completion: 0.6
+    manual: 0.55
   
   proactive_queries:
     - "architecture technique"

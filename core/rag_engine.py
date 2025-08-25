@@ -186,7 +186,7 @@ class CompressionManager:
             summary_text = llm.generate(
                 prompt=prompt,
                 temperature=0.3,
-                max_tokens=self.max_tokens_summary
+                max_tokens=self.rag.max_tokens_summary
             )
             
             # Créer le résumé avec métadonnées

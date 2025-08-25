@@ -10,7 +10,6 @@ utils/__pycache__/
 CLAUDE.md
 GEMINI.md
 
-test_*
 
 # Dossiers d'environnement virtuel
 .venv/
@@ -18,8 +17,11 @@ venv/
 env/
 ENV/
 
-# Dossiers de tests unitaires lors du dev
-/tests/
+# Ancien Dossiers de tests unitaires lors du dev
+/tests/OLD
+/tests/projects
+/tests/logs
+
 
 # Fichiers de secrets et de configuration locale
 # Le fichier .env contient les clés API et ne doit JAMAIS être versionné

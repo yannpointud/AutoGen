@@ -4,6 +4,9 @@
 
 🚀 Intelligent multi-agent platform that orchestrates specialized AI agents to design, develop and document complete software projects autonomously.
 
+*Note: This project is not based on Microsoft's AutoGen framework*
+*Initially, I planned to use it, but due to its limitations, I opted to rebuild it from scratch*
+*The project name was kept as a nod to this experience* 😉
 
 ## ✨ Key Features
 

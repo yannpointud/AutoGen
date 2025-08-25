@@ -11,6 +11,33 @@ from datetime import datetime
 from typing import Optional, Dict, Any
 from logging.handlers import RotatingFileHandler
 from pythonjsonlogger import jsonlogger
+from rich.logging import RichHandler
+from rich.console import Console
+
+
+class ColoredFormatter(logging.Formatter):
+    """Formatter qui colorise SEULEMENT les niveaux de log (DEBUG, INFO, WARNING, ERROR)."""
+    
+    # Codes couleur ANSI
+    COLORS = {
+        'DEBUG': '\033[34m',           # Bleu
+        'INFO': '\033[36m',            # Cyan
+        'WARNING': '\033[1;33m',       # Jaune gras
+        'ERROR': '\033[1;31m',         # Rouge gras
+    }
+    RESET = '\033[0m'
+    
+    def format(self, record):
+        # Format ORIGINAL exact
+        log_message = super().format(record)
+        
+        # Coloriser SEULEMENT le mot du niveau
+        level_name = record.levelname
+        if level_name in self.COLORS:
+            colored_level = f"{self.COLORS[level_name]}{level_name}{self.RESET}"
+            log_message = log_message.replace(f" {level_name} ", f" {colored_level} ")
+        
+        return log_message
 
 
 class CustomJsonFormatter(jsonlogger.JsonFormatter):
@@ -73,9 +100,9 @@ def setup_logger(
         '%(timestamp)s %(level)s %(name)s %(message)s'
     )
     
-    # Handler pour la console (format lisible)
+    # Handler pour la console (format IDENTIQUE à l'origine mais avec niveaux colorés)
     console_handler = logging.StreamHandler(sys.stdout)
-    console_formatter = logging.Formatter(
+    console_formatter = ColoredFormatter(
         '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
@@ -357,14 +384,16 @@ def setup_llm_debug_logger(project_name: Optional[str] = None) -> logging.Logger
     
     # Handler console pour voir en temps réel (si DEBUG activé)
     if level <= logging.DEBUG:
-        console_handler = logging.StreamHandler(sys.stdout)
-        console_formatter = logging.Formatter(
-            '%(asctime)s - LLM_DEBUG - %(message)s',
-            datefmt='%H:%M:%S'
+        llm_console_handler = logging.StreamHandler(sys.stdout)
+        
+        # Même formatter coloré pour LLM debug
+        llm_console_formatter = ColoredFormatter(
+            '%(asctime)s - LLM_DEBUG - %(levelname)s - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
         )
-        console_handler.setFormatter(console_formatter)
-        console_handler.setLevel(logging.DEBUG)
-        logger.addHandler(console_handler)
+        llm_console_handler.setFormatter(llm_console_formatter)
+        llm_console_handler.setLevel(logging.DEBUG)
+        logger.addHandler(llm_console_handler)
     
     return logger
 
@@ -393,3 +422,19 @@ def parse_json_logs(log_file: Path) -> list[Dict[str, Any]]:
                 continue
     
     return logs
+
+
+def log_file_operation(logger: logging.Logger, file_path: str, operation: str = "créé") -> None:
+    """
+    Affiche une opération sur fichier de façon simple et propre.
+    Affiche directement: ✅ Fichier main.py créé
+    
+    Args:
+        logger: Logger (non utilisé, gardé pour compatibilité)
+        file_path: Chemin du fichier (str ou Path)
+        operation: Type d'opération (créé, modifié, supprimé, etc.)
+    """
+    from pathlib import Path
+    
+    file_name = Path(file_path).name
+    print(f"✅ Fichier {file_name} {operation}")
