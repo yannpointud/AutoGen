@@ -12,7 +12,7 @@ et ce projet adhère au [Versioning Sémantique](https://semver.org/spec/v2.0.0.
   - **Update tests unitaires** : Suite au dernieres modifications, refonte de plusieurs tests unitaires 
 
 ### 🎉 Ajouté
-  - **Automatisation test unitaires** : `Runtest.sh`
+  - **Automatisation test unitaires** : `runtest.sh`
 
 ## [1.3.1] - 2025-08-22
 
@@ -107,10 +107,10 @@ et ce projet adhère au [Versioning Sémantique](https://semver.org/spec/v2.0.0.
   - Messages de log détaillés lors de troncature : nom du fichier, tailles avant/après
   - Support de fichiers 5× plus volumineux (ex: `rag_engine.py` indexé complètement)
 - **Système d'injection RAG unifié et simplifié**
-  - ✅ Suppression paramètre redondant `max_results` (utilisait `top_k` à la place)
-  - ✅ Calcul automatique de `chars_per_chunk = max_context_length ÷ top_k` (5000 ÷ 5 = 1000 chars/chunk vs 300 hardcodé)
-  - ✅ Utilisation complète de l'espace disponible : 5000 chars vs ~900 chars précédemment
-  - ✅ Configuration cohérente : un seul paramètre `top_k` contrôle recherche ET injection
+  -  Suppression paramètre redondant `max_results` (utilisait `top_k` à la place)
+  -  Calcul automatique de `chars_per_chunk = max_context_length ÷ top_k` (5000 ÷ 5 = 1000 chars/chunk vs 300 hardcodé)
+  -  Utilisation complète de l'espace disponible : 5000 chars vs ~900 chars précédemment
+  -  Configuration cohérente : un seul paramètre `top_k` contrôle recherche ET injection
 - **Suppression limite arbitraire d'injection RAG**
   - Suppression du check `len(prompt) > 10000` qui bloquait l'injection sur prompts longs
   - MLPricePredictor déblocé : injection RAG maintenant fonctionnelle sur prompts 15-20KB
@@ -123,11 +123,9 @@ et ce projet adhère au [Versioning Sémantique](https://semver.org/spec/v2.0.0.
   - Solution : déplacement des définitions de métadonnées avant utilisation
 - **BUG : Hiérarchie des prompts système vs utilisateur inversée**
   - **Problème** : Le contexte RAG était injecté en `role: "system"` (priorité maximale), écrasant les instructions spécifiques des jalons transmises en `role: "user"`
-  - **Cause racine** : Les agents recevaient le Project Charter complet via RAG système au lieu des instructions de jalon ciblées
-  - **Solution** : 
+  - **Cause racine** : Les agents recevaient le Project Charter complet via RAG système au lieu des instructions de jalon ciblées 
     - ✅ **Étape 1** : Déplacement du contexte RAG du prompt système vers le prompt utilisateur avec préfixe "Contexte projet pertinent :"
     - ✅ **Étape 2** : Création de prompts système spécifiques par agent : `"Tu es {AgentName}, {Role}.\nPersonnalité: {Personality}"`
-  - **Tests** : Suite de tests exhaustive créée pour valider la structure des prompts (`test_prompt_structure_*.py`)
   
 ### 🧪 Tests
 - Tests unitaires pour vérifier troncature RAG et calculs automatiques
