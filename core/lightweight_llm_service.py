@@ -16,6 +16,7 @@ class LightweightLLMService:
     """
     
     def __init__(self, project_name: str = "System"):
+        self.project_name = project_name
         self.logger = get_project_logger(project_name, "LightweightLLM")
         self.config = default_config.get('rag', {}).get('auto_context_injection', {})
         
@@ -78,7 +79,8 @@ Mots-clés:'''
             result = llm.generate(
                 prompt=extraction_prompt,
                 max_tokens=self.keyword_max_tokens,
-                temperature=self.keyword_temperature
+                temperature=self.keyword_temperature,
+                agent_context={'agent_name': 'LightweightSvc'}
             )
             
             # Nettoyer et valider le résultat
@@ -135,7 +137,8 @@ Résumé structuré:'''
             result = llm.generate(
                 prompt=summarization_prompt,
                 max_tokens=self.summary_max_output // 3,  # Estimation tokens ≈ chars/3
-                temperature=self.summary_temperature
+                temperature=self.summary_temperature,
+                agent_context={'agent_name': 'LightweightSvc'}
             )
             
             summary = result.strip()
@@ -193,7 +196,8 @@ Résumé technique détaillé:'''
             result = llm.generate(
                 prompt=conversation_prompt,
                 max_tokens=self.summary_max_output // 3,  # Compression modérée (vs //6)
-                temperature=0.2  # Légèrement plus créatif pour préserver détails
+                temperature=0.2,  # Légèrement plus créatif pour préserver détails
+                agent_context={'agent_name': 'LightweightSvc'}
             )
             
             summary = result.strip()
@@ -210,6 +214,108 @@ Résumé technique détaillé:'''
             self.logger.error(f"Erreur résumé conversation: {str(e)}")
             return conversation_text  # Fallback vers conversation originale
     
+    def self_evaluate_mission(self, objective: str, artifacts: list, issues: list) -> dict:
+        """
+        Évalue si une mission est réussie en se basant sur son objectif et ses résultats.
+        Utilise un modèle LLM léger pour une évaluation rapide et économique.
+        
+        Args:
+            objective: Objectif de la mission/tâche
+            artifacts: Liste des fichiers/artefacts créés
+            issues: Liste des erreurs rencontrées
+            
+        Returns:
+            dict: {"assessment": "compliant|partial|failed", "reason": str, "confidence": float}
+        """
+        if not self.keyword_enabled:
+            self.logger.debug("Auto-évaluation désactivée, évaluation par défaut")
+            return {
+                "assessment": "partial",
+                "reason": "Auto-évaluation désactivée - évaluation neutre par défaut",
+                "confidence": 0.5
+            }
+        
+        # Préparation des données pour l'évaluation
+        artifacts_str = ', '.join(artifacts) if artifacts else 'Aucun artefact créé'
+        issues_str = ', '.join(issues) if issues else 'Aucune erreur signalée'
+        
+        evaluation_prompt = f"""Évalue objectivement la réussite de cette mission d'agent.
+
+OBJECTIF DE LA MISSION:
+"{objective}"
+
+ARTEFACTS PRODUITS:
+{artifacts_str}
+
+ERREURS RENCONTRÉES:
+{issues_str}
+
+Instructions d'évaluation - Choisis le status approprié :
+
+"compliant" = Tout s'est bien passé à 100%
+- ✅ Tous les livrables demandés ont été créés
+- ✅ Aucune action n'a échoué  
+- ✅ Aucune limitation technique rencontrée
+
+"partial" = Certaines actions ont échoué MAIS une partie significative du travail a été réalisée
+- ⚠️ Au moins 25% du travail accompli
+- ⚠️ Certains livrables manquent ou actions échouées
+- ⚠️ Préciser ce qui a été fait vs ce qui manque
+
+"failed" = La tâche a échoué à au moins 75%
+- ❌ Peu ou pas de livrables produits
+- ❌ Échecs majeurs ou blocages techniques  
+- ❌ Objectifs principaux non atteints
+
+OBLIGATOIRE : Dans ta réponse, liste explicitement :
+1. Ce qui A ÉTÉ FAIT
+2. Ce qui N'A PAS PU être fait (et pourquoi)
+
+Critères:
+1. Les artefacts correspondent-ils à l'objectif?
+2. Les erreurs compromettent-elles la mission?
+3. Y a-t-il une cohérence logique entre intention et résultat?
+
+Réponds UNIQUEMENT avec un JSON valide au format suivant, sans aucun autre texte:
+{{"assessment": "compliant|partial|failed", "reason": "Une phrase concise expliquant la décision", "confidence": 0.0}}"""
+
+        try:
+            llm = LLMFactory.create(model=self.keyword_model)
+            response_str = llm.generate(
+                prompt=evaluation_prompt, 
+                temperature=0.1, 
+                max_tokens=200,
+                agent_context={'agent_name': 'LightweightSvc'}
+            )
+            
+            # Utiliser le parser JSON centralisé robuste
+            from core.json_parser import get_json_parser
+            
+            parser = get_json_parser(f"{self.project_name}.LightweightLLM")
+            result = parser.parse_llm_response(response_str)
+            
+            # Si parsing échoue, retourner dict vide pour déclencher la ValueError
+            if not result:
+                result = {}
+            
+            # Validation du format
+            if not all(key in result for key in ['assessment', 'reason', 'confidence']):
+                raise ValueError("Format JSON incomplet")
+                
+            if result['assessment'] not in ['compliant', 'partial', 'failed']:
+                raise ValueError(f"Assessment invalide: {result['assessment']}")
+            
+            self.logger.debug(f"Auto-évaluation: {result['assessment']} (confidence: {result['confidence']})")
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Erreur critique lors de l'auto-évaluation: {e}")
+            return {
+                "assessment": "failed",
+                "reason": f"Erreur interne durant l'auto-évaluation: {str(e)}",
+                "confidence": 0.1
+            }
+
     def summarize_constraints(self, project_charter: str, task_description: str) -> str:
         """
         CYCLE COGNITIF HYBRIDE - Phase d'Alignement
@@ -256,7 +362,8 @@ Contraintes critiques:"""
             result = llm.generate(
                 prompt=alignment_prompt,
                 max_tokens=800,  # Suffisant pour contraintes détaillées
-                temperature=0.1   # Très factuel
+                temperature=0.1,   # Très factuel
+                agent_context={'agent_name': 'LightweightSvc'}
             )
             
             # Validation et nettoyage

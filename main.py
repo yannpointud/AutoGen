@@ -336,7 +336,7 @@ class AutoGenMain:
         
         # Afficher les jalons
         self.console.print("\n[bold]🎯 Jalons du projet :[/bold]")
-        for i, milestone in enumerate(supervisor.milestones, 1):
+        for i, milestone in enumerate(supervisor._milestone_manager.milestones, 1):
             self.console.print(f"\n{i}. [cyan]{milestone['name']}[/cyan]")
             self.console.print(f"   {milestone.get('description', 'N/A')}")
             self.console.print(f"   Agents : {', '.join(milestone['agents_required'])}")

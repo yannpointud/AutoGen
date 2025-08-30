@@ -250,45 +250,14 @@ class BaseAgent(ABC):
     def _robust_json_parse(self, json_content: str) -> List[Dict[str, Any]]:
         """
         Parser JSON robuste avec stratégies de récupération multiples.
-        Tente de récupérer le maximum d'outils même si le JSON est incomplet.
+        DÉLÉGUÉ vers le parser centralisé pour éviter la duplication de code.
         """
-        strategies = [
-            self._strategy_direct_parse,
-            self._strategy_fix_incomplete,
-            self._strategy_progressive_parse,  # Nouvelle stratégie pour code long
-            self._strategy_extract_partial,
-            self._strategy_documentation_rescue,  # Stratégie de récupération de documentation
-            self._strategy_regex_fallback
-        ]
+        from core.json_parser import get_json_parser
         
-        for i, strategy in enumerate(strategies, 1):
-            try:
-                result = strategy(json_content)
-                if result:
-                    if i > 1:  # Log seulement si fallback utilisé
-                        self.logger.info(f"JSON récupéré avec stratégie #{i}: {len(result)} outils extraits")
-                    return result
-            except Exception as e:
-                self.logger.debug(f"Stratégie #{i} échouée: {str(e)}")
-                continue
-        
-        # Toutes les stratégies ont échoué
-        self.logger.warning(f"Échec de toutes les stratégies de parsing JSON : {json_content[:200]}...")
-        return []
-    
-    def _strategy_direct_parse(self, json_content: str) -> List[Dict[str, Any]]:
-        """Stratégie 1: Parsing JSON5 direct (méthode actuelle)."""
-        parsed = json5.loads(json_content)
-        
-        # Normaliser sous forme de liste
-        if isinstance(parsed, dict):
-            return [parsed]
-        elif isinstance(parsed, list):
-            return parsed
-        else:
-            return []
-    
-    def _strategy_fix_incomplete(self, json_content: str) -> List[Dict[str, Any]]:
+        parser = get_json_parser(f"{self.project_name}.{self.name}")
+        return parser.parse_tool_array(json_content)
+
+    def execute_tool(self, tool_name: str, parameters: Dict[str, Any]) -> ToolResult:
         """Stratégie 2: Réparer les JSON incomplets (fermer crochets/accolades)."""
         content = json_content.strip()
         
@@ -315,135 +284,224 @@ class BaseAgent(ABC):
         import re
         tools = []
         
-        # Pattern amélioré pour capturer chaque outil complet
-        tool_pattern = r'\{\s*"tool"\s*:\s*"([^"]+)"\s*,\s*"parameters"\s*:\s*(\{.*?\})\s*(?=\s*\}|\s*,|\s*\])'
+        # Pattern pour capturer l'objet outil COMPLET (tous les champs)
+        # Utilise un compteur de niveau pour les accolades imbriquées
+        tool_pattern = r'\{\s*"tool"\s*:\s*"[^"]+"\s*,(?:[^{}]|\{[^{}]*\})*\}'
         
-        # Chercher tous les tools individuellement
+        # Chercher tous les objets outils complets
         matches = re.finditer(tool_pattern, json_content, re.DOTALL)
         
         for match in matches:
             try:
-                tool_name = match.group(1)
-                params_block = match.group(2)
+                # Parser l'objet JSON complet au lieu de le reconstruire
+                tool_json = match.group(0)
                 
-                # Parser les paramètres avec gestion d'erreur robuste
                 try:
-                    import json5
-                    parameters = json5.loads(params_block)
-                except:
-                    # Fallback: parsing JSON standard
-                    import json
-                    parameters = json.loads(params_block)
-                
-                tool_obj = {
-                    "tool": tool_name,
-                    "parameters": parameters
-                }
-                
-                tools.append(tool_obj)
-                self.logger.debug(f"Outil parsé progressivement: {tool_name}")
+                    # Utiliser le parser JSON centralisé robuste
+                    from core.json_parser import get_json_parser
+                    parser = get_json_parser(f"{self.project_name}.{self.name}")
+                    tool_obj = parser.parse_universal(tool_json, return_type='dict')
+                    
+                    # Vérifier que c'est un objet outil valide
+                    if isinstance(tool_obj, dict) and "tool" in tool_obj:
+                        tools.append(tool_obj)
+                        self.logger.debug(f"Outil parsé progressivement: {tool_obj.get('tool', 'unknown')}")
+                except Exception as parse_error:
+                    self.logger.debug(f"Échec parsing outil individuel: {str(parse_error)}")
+                    continue
                 
             except Exception as e:
                 self.logger.debug(f"Échec parsing outil individuel: {str(e)}")
                 continue
         
-        # Si ça n'a pas marché, essayer une approche plus agressive pour gros code
+        # Si ça n'a pas marché, essayer un pattern plus spécialisé pour gros code avec balancing
         if not tools:
-            # Pattern pour capturer de très gros blocs de code
-            large_tool_pattern = r'\{\s*"tool"\s*:\s*"([^"]+)"\s*,\s*"parameters"\s*:\s*\{[^{}]*"code"\s*:\s*"([^"]*(?:\\.[^"]*)*)"[^{}]*\}\s*\}'
-            
-            large_matches = re.finditer(large_tool_pattern, json_content, re.DOTALL)
-            for match in large_matches:
-                try:
-                    tool_name = match.group(1)
-                    # Reconstruire un objet simplifié pour implement_code
-                    if tool_name == "implement_code":
-                        # Extraire les paramètres essentiels
-                        filename_match = re.search(r'"filename"\s*:\s*"([^"]*)"', match.group(0))
-                        language_match = re.search(r'"language"\s*:\s*"([^"]*)"', match.group(0))
-                        code = match.group(2)
-                        
-                        if filename_match and language_match:
-                            parameters = {
-                                "filename": filename_match.group(1),
-                                "language": language_match.group(1),
-                                "code": code,
-                                "description": f"Code parsé progressivement pour {filename_match.group(1)}"
-                            }
-                            
-                            tools.append({
-                                "tool": tool_name,
-                                "parameters": parameters
-                            })
-                            self.logger.debug(f"Gros outil parsé: {tool_name} - {filename_match.group(1)}")
+            # Utiliser un parser avec équilibrage des accolades pour gros code
+            def find_balanced_objects(text, start_pos=0):
+                """Trouve des objets JSON équilibrés dans le texte."""
+                objects = []
+                pos = start_pos
                 
-                except Exception as e:
-                    self.logger.debug(f"Échec parsing gros outil: {str(e)}")
-                    continue
+                while pos < len(text):
+                    # Chercher le début d'un objet outil
+                    tool_start = text.find('{"tool":', pos)
+                    if tool_start == -1:
+                        break
+                    
+                    # Compter les accolades pour trouver la fin
+                    brace_count = 0
+                    end_pos = tool_start
+                    
+                    for i in range(tool_start, len(text)):
+                        if text[i] == '{':
+                            brace_count += 1
+                        elif text[i] == '}':
+                            brace_count -= 1
+                            if brace_count == 0:
+                                end_pos = i + 1
+                                break
+                    
+                    if brace_count == 0:  # Objet complet trouvé
+                        try:
+                            obj_json = text[tool_start:end_pos]
+                            import json5
+                            obj = json5.loads(obj_json)
+                            if isinstance(obj, dict) and "tool" in obj:
+                                objects.append(obj)
+                                self.logger.debug(f"Objet équilibré parsé: {obj.get('tool', 'unknown')}")
+                        except Exception as e:
+                            self.logger.debug(f"Échec parsing objet équilibré: {str(e)}")
+                    
+                    pos = tool_start + 1
+                
+                return objects
+            
+            tools.extend(find_balanced_objects(json_content))
         
         return tools
     
     def _strategy_extract_partial(self, json_content: str) -> List[Dict[str, Any]]:
-        """Stratégie 3: Extraire les objets JSON complets même dans un document partiel."""
+        """Stratégie 4: Extraire les objets JSON complets même dans un document partiel."""
         tools = []
         
-        # Chercher tous les objets qui ressemblent à des tool calls
-        # Pattern pour: { "tool": "nom", "parameters": { ... } }
-        pattern = r'\{\s*"tool"\s*:\s*"([^"]+)"\s*,\s*"parameters"\s*:\s*(\{[^}]*\})\s*\}'
-        
-        matches = re.finditer(pattern, json_content, re.DOTALL)
-        for match in matches:
-            try:
-                tool_name = match.group(1)
-                params_str = match.group(2)
+        # Utiliser une approche plus robuste avec équilibrage des accolades
+        def extract_complete_objects(text):
+            """Extrait tous les objets JSON complets qui commencent par 'tool'."""
+            objects = []
+            pos = 0
+            
+            while pos < len(text):
+                # Chercher le début d'un objet potentiel
+                start_patterns = [
+                    text.find('{"tool":', pos),
+                    text.find('{ "tool":', pos),
+                    text.find('{\n  "tool":', pos),
+                    text.find('{\n    "tool":', pos)
+                ]
+                start_positions = [p for p in start_patterns if p != -1]
                 
-                # Parser les paramètres
-                parameters = json5.loads(params_str)
+                if not start_positions:
+                    break
                 
-                tools.append({
-                    "tool": tool_name,
-                    "parameters": parameters
-                })
-            except Exception:
-                continue
+                start_pos = min(start_positions)
+                
+                # Équilibrer les accolades pour trouver la fin
+                brace_count = 0
+                end_pos = start_pos
+                in_string = False
+                escape_next = False
+                
+                for i in range(start_pos, len(text)):
+                    char = text[i]
+                    
+                    if escape_next:
+                        escape_next = False
+                        continue
+                    
+                    if char == '\\':
+                        escape_next = True
+                        continue
+                    
+                    if char == '"' and not escape_next:
+                        in_string = not in_string
+                        continue
+                    
+                    if not in_string:
+                        if char == '{':
+                            brace_count += 1
+                        elif char == '}':
+                            brace_count -= 1
+                            if brace_count == 0:
+                                end_pos = i + 1
+                                break
+                
+                if brace_count == 0:  # Objet complet trouvé
+                    try:
+                        obj_json = text[start_pos:end_pos]
+                        import json5
+                        obj = json5.loads(obj_json)
+                        if isinstance(obj, dict) and "tool" in obj:
+                            objects.append(obj)
+                            self.logger.debug(f"Objet partiel extrait: {obj.get('tool', 'unknown')}")
+                    except Exception as e:
+                        self.logger.debug(f"Échec parsing objet partiel: {str(e)}")
+                
+                pos = start_pos + 1
+            
+            return objects
         
+        tools.extend(extract_complete_objects(json_content))
         return tools
     
     def _strategy_documentation_rescue(self, json_content: str) -> List[Dict[str, Any]]:
         """
-        STRATÉGIE 4 NOUVELLE: Extraction spécialisée pour outils de documentation.
-        Gère les cas où le contenu de documentation cause des échecs de parsing.
+        STRATÉGIE 5: Extraction spécialisée pour outils de documentation.
+        Essaie d'abord de parser l'objet complet, puis fait du rescue si nécessaire.
         """
         tools = []
         
-        # Détecter les tentatives de create_project_file pour documentation
-        doc_patterns = [
-            (r'"tool"\s*:\s*"create_project_file".*?"filename"\s*:\s*"(README\.md|.*\.md|.*\.txt)"', 'create_project_file'),
-            (r'"tool"\s*:\s*"create_document".*?"filename"\s*:\s*"([^"]+)"', 'create_document'),
+        # D'abord essayer de trouver des objets JSON complets pour la documentation
+        doc_tool_patterns = [
+            r'\{\s*"tool"\s*:\s*"create_project_file"[^}]*\}',
+            r'\{\s*"tool"\s*:\s*"create_document"[^}]*\}',
+            r'\{\s*"tool"\s*:\s*"generate_architecture_diagrams"[^}]*\}',
+            r'\{\s*"tool"\s*:\s*"generate_configuration_files"[^}]*\}'
         ]
         
-        for pattern, tool_name in doc_patterns:
-            matches = re.finditer(pattern, json_content, re.DOTALL | re.IGNORECASE)
+        for pattern in doc_tool_patterns:
+            matches = re.finditer(pattern, json_content, re.DOTALL)
             for match in matches:
-                filename = match.group(1)
-                
-                # Extraire le contenu, même partiellement
-                content = self._extract_documentation_content(json_content, filename)
-                
-                if content or filename:  # Si on a au moins le filename
-                    tool_data = {
-                        "tool": tool_name,
-                        "parameters": {"filename": filename}
-                    }
+                try:
+                    # Essayer de parser l'objet complet d'abord
+                    obj_json = match.group(0)
                     
-                    if content:
-                        tool_data["parameters"]["content"] = content
-                    else:
-                        # Contenu de fallback basique
-                        tool_data["parameters"]["content"] = self._generate_fallback_content(filename)
+                    # Utiliser l'équilibrage des accolades pour capturer l'objet complet
+                    start_pos = match.start()
+                    brace_count = 0
+                    end_pos = start_pos
                     
-                    tools.append(tool_data)
-                    self.logger.info(f"Documentation rescuée: {filename} ({len(content)} chars)")
+                    for i in range(start_pos, len(json_content)):
+                        if json_content[i] == '{':
+                            brace_count += 1
+                        elif json_content[i] == '}':
+                            brace_count -= 1
+                            if brace_count == 0:
+                                end_pos = i + 1
+                                break
+                    
+                    if brace_count == 0:
+                        obj_json = json_content[start_pos:end_pos]
+                        
+                        try:
+                            import json5
+                            tool_obj = json5.loads(obj_json)
+                            if isinstance(tool_obj, dict) and "tool" in tool_obj:
+                                tools.append(tool_obj)
+                                self.logger.debug(f"Outil documentation parsé: {tool_obj.get('tool', 'unknown')}")
+                                continue
+                        except:
+                            pass  # Passe au rescue
+                    
+                    # Si le parsing complet échoue, faire du rescue manuel
+                    tool_match = re.search(r'"tool"\s*:\s*"([^"]+)"', obj_json)
+                    filename_match = re.search(r'"filename"\s*:\s*"([^"]*)"', obj_json)
+                    if tool_match and filename_match:
+                        tool_data = {
+                            "tool": tool_match.group(1),
+                            "parameters": {"filename": filename_match.group(1)}
+                        }
+                        
+                        # Extraire le contenu si possible
+                        content = self._extract_documentation_content(obj_json, filename_match.group(1))
+                        if content:
+                            tool_data["parameters"]["content"] = content
+                        
+                        tools.append(tool_data)
+                        self.logger.debug(f"Documentation rescuée: {filename_match.group(1)}")
+                
+                except Exception as e:
+                    self.logger.debug(f"Échec rescue documentation: {str(e)}")
+                    continue
         
         return tools
     
@@ -538,20 +596,36 @@ Continuer l'amélioration de la couverture de tests.
             return f"# {filename}\n\nContenu généré automatiquement.\n"
 
     def _strategy_regex_fallback(self, json_content: str) -> List[Dict[str, Any]]:
-        """Stratégie 5: Extraction regex basique des noms d'outils au minimum."""
+        """Stratégie 6: Extraction regex basique - essaie de récupérer le maximum de champs."""
         tools = []
         
-        # Au minimum, extraire les noms d'outils mentionnés
-        tool_pattern = r'"tool"\s*:\s*"([^"]+)"'
-        tool_names = re.findall(tool_pattern, json_content)
+        # Chercher tous les outils avec leurs contextes
+        tool_context_pattern = r'"tool"\s*:\s*"([^"]+)"[^}]*'
+        tool_matches = re.finditer(tool_context_pattern, json_content, re.DOTALL)
         
-        for tool_name in tool_names[:3]:  # Limiter à 3 pour éviter la redondance
-            # Créer un outil minimal avec paramètres vides
-            tools.append({
-                "tool": tool_name,
-                "parameters": {}
-            })
-            self.logger.info(f"Outil minimal récupéré: {tool_name}")
+        for match in tool_matches[:3]:  # Limiter à 3 pour éviter la redondance
+            tool_name = match.group(1)
+            context = match.group(0)
+            
+            tool_data = {"tool": tool_name, "parameters": {}}
+            
+            # Extraire les paramètres de base
+            param_patterns = [
+                (r'"filename"\s*:\s*"([^"]*)"', "filename"),
+                (r'"content"\s*:\s*"([^"]*)"', "content"),
+                (r'"language"\s*:\s*"([^"]*)"', "language"),
+                (r'"description"\s*:\s*"([^"]*)"', "description"),
+                (r'"config_type"\s*:\s*"([^"]*)"', "config_type"),
+                (r'"diagram_type"\s*:\s*"([^"]*)"', "diagram_type"),
+            ]
+            
+            for pattern, param_name in param_patterns:
+                param_match = re.search(pattern, context)
+                if param_match:
+                    tool_data["parameters"][param_name] = param_match.group(1)
+            
+            tools.append(tool_data)
+            self.logger.info(f"Outil fallback récupéré: {tool_name}")
         
         return tools
 
@@ -618,7 +692,7 @@ Continuer l'amélioration de la couverture de tests.
         
         try:
             # ========== PHASE 1: ALIGNEMENT  ==========
-            self.logger.info("🔄 Démarrage CYCLE COGNITIF HYBRIDE - Phase d'Alignement")
+            self.logger.info("🔄 Alignement agent Projet")
             alignment_start = time.time()
             
             # Récupérer le Project Charter depuis le RAG
@@ -633,10 +707,10 @@ Continuer l'amélioration de la couverture de tests.
                 self.logger.warning("Project Charter non trouvé, contraintes par défaut appliquées")
             
             alignment_duration = time.time() - alignment_start
-            self.logger.info(f"✅ Phase d'Alignement terminée en {alignment_duration:.2f}s")
+            #self.logger.info(f"✅ Phase d'Alignement terminée en {alignment_duration:.2f}s")
             
             # ========== PHASE 2: RAISONNEMENT (Main LLM) ==========
-            self.logger.info("🧠 Démarrage Phase de Raisonnement avec contraintes")
+            self.logger.info("🧠 Think Agent -> ")
             reasoning_start = time.time()
             
             # Construire le prompt pour le LLM principal avec contraintes injectées
@@ -679,6 +753,8 @@ Réponds en texte libre, PAS en JSON. Sois concis mais précis.
                 temperature=self.llm_config.get('temperature', 0.7)
             )
             
+
+            self.logger.info(f"🏃 -> Act Agent")
             # Phase ACT - faire confiance à la mémoire conversationnelle
             action_prompt = f"""Basé sur l'analyse que tu viens de fournir, traduis ton plan en un JSON d'appels d'outils.
 
@@ -738,13 +814,14 @@ RÉPONDS UNIQUEMENT AVEC LE JSON, AUCUN TEXTE AVANT OU APRÈS.
             reasoning_duration = time.time() - reasoning_start
             cycle_total = time.time() - cycle_start
             
-            self.logger.info(f"✅ Phase de Raisonnement terminée en {reasoning_duration:.2f}s")
-            self.logger.info(f"🎯 CYCLE COGNITIF HYBRIDE complet en {cycle_total:.2f}s (Alignement: {alignment_duration:.2f}s, Raisonnement: {reasoning_duration:.2f}s)")
+            #self.logger.info(f"✅ Phase de Raisonnement terminée en {reasoning_duration:.2f}s")
+            #self.logger.info(f"🎯 CYCLE COGNITIF HYBRIDE complet en {cycle_total:.2f}s (Alignement: {alignment_duration:.2f}s, Raisonnement: {reasoning_duration:.2f}s)")
             
             plan = {
                 'task_id': self.state['current_task_id'],
                 'analysis': analysis,
                 'planned_tools': tool_calls,
+                'deliverables': task.get('deliverables', []),
                 'milestone_id': self.current_milestone_id,
                 'agent_name': self.name,
                 'timestamp': datetime.now().isoformat(),
@@ -835,11 +912,20 @@ RÉPONDS UNIQUEMENT AVEC LE JSON, AUCUN TEXTE AVANT OU APRÈS.
                     
                     # AJOUT : Envoi systématique du rapport au supervisor
                     try:
+                        # Déterminer le type de rapport basé sur l'auto-évaluation
+                        assessment = structured_report.get('self_assessment', 'unknown')
+                        if assessment == 'compliant':
+                            report_type = 'completion'
+                        elif assessment == 'partial':
+                            report_type = 'progress'
+                        else:  # 'failed' ou 'unknown'
+                            report_type = 'issue'
+                        
                         self.tools['report_to_supervisor']({
-                            'report_type': 'completion',
+                            'report_type': report_type,
                             'content': structured_report
                         })
-                        self.logger.debug("Rapport structuré envoyé au supervisor")
+                        self.logger.debug(f"Rapport structuré envoyé au supervisor: {report_type} ({assessment})")
                     except Exception as e:
                         self.logger.warning(f"Échec envoi rapport au supervisor: {e}")
         except Exception as e:
@@ -852,59 +938,35 @@ RÉPONDS UNIQUEMENT AVEC LE JSON, AUCUN TEXTE AVANT OU APRÈS.
     
     def _generate_structured_report(self, plan: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
         """
-        PHASE 2: Génère un rapport structuré pour la vérification intelligente.
+        NOUVEAU SYSTÈME: Génère un rapport structuré basé sur l'évaluation sémantique intelligente.
+        Remplace complètement l'ancienne logique de validation par correspondance exacte.
         """
         try:
-            # Collecter les informations de base
+            # Collecter les faits bruts de la mission
             artifacts_created = result.get('artifacts', [])
             tools_executed = result.get('tools_executed', [])
-            milestone_id = plan.get('milestone_id', 'unknown')
-            
-            # Analyser les succès/échecs des outils
-            successful_tools = [t for t in tools_executed if t.get('status') == 'success']
             failed_tools = [t for t in tools_executed if t.get('status') == 'error']
+            issues = [t.get('result', {}).get('error', 'Erreur inconnue') for t in failed_tools]
             
-            # Évaluer la conformité basique
-            deliverables_expected = plan.get('deliverables', [])
-            deliverables_status = {}
+            # L'analyse de la phase 'think' est la meilleure source pour l'objectif de la mission
+            task_objective = plan.get('analysis', 'Objectif non défini.')
             
-            for deliverable in deliverables_expected:
-                # Vérification simple: chercher le nom du deliverable dans les artifacts
-                delivered = any(deliverable.lower() in str(artifact).lower() 
-                              for artifact in artifacts_created)
-                deliverables_status[deliverable] = 'completed' if delivered else 'missing'
+            # Appeler le service léger pour obtenir une évaluation sémantique
+            evaluation_response = self.lightweight_service.self_evaluate_mission(
+                objective=task_objective,
+                artifacts=artifacts_created,
+                issues=issues
+            )
             
-            # Auto-évaluation basée sur les métriques
-            missing_deliverables = [d for d, status in deliverables_status.items() if status == 'missing']
-            has_artifacts = len(artifacts_created) > 0
-            has_failures = len(failed_tools) > 0
-            
-            # Logique d'auto-évaluation
-            if not missing_deliverables and has_artifacts and not has_failures:
-                self_assessment = 'compliant'
-                confidence_level = 0.9
-            elif not missing_deliverables and has_artifacts:
-                self_assessment = 'partial'  # Artefacts créés mais quelques échecs d'outils
-                confidence_level = 0.7
-            elif has_artifacts:
-                self_assessment = 'partial'  # Quelques artefacts mais pas tout
-                confidence_level = 0.5
-            else:
-                self_assessment = 'failed'   # Aucun artefact significatif
-                confidence_level = 0.2
-            
-            # Construire le rapport structuré
+            # Construire le rapport final en se basant sur cette évaluation intelligente
             structured_report = {
                 'artifacts_created': artifacts_created,
-                'decisions_made': f"Exécution de {len(successful_tools)} outils avec succès",
-                'issues_encountered': [
-                    f"Outil {t.get('tool', 'unknown')} a échoué: {t.get('result', {}).get('error', 'Erreur inconnue')}"
-                    for t in failed_tools
-                ],
-                'self_assessment': self_assessment,
-                'confidence_level': confidence_level,
-                'deliverables_status': deliverables_status,
-                'milestone_id': milestone_id,
+                'decisions_made': f"Mission évaluée par l'agent lui-même via compréhension sémantique.",
+                'issues_encountered': issues,
+                'self_assessment': evaluation_response.get('assessment', 'unknown'),
+                'confidence_level': evaluation_response.get('confidence', 0.5),
+                'assessment_reason': evaluation_response.get('reason', 'Raison non fournie.'),
+                'milestone_id': plan.get('milestone_id', 'unknown'),
                 'agent_name': self.name,
                 'completion_timestamp': datetime.now().isoformat()
             }
@@ -912,15 +974,14 @@ RÉPONDS UNIQUEMENT AVEC LE JSON, AUCUN TEXTE AVANT OU APRÈS.
             return structured_report
             
         except Exception as e:
-            self.logger.error(f"Erreur génération rapport structuré: {e}")
-            # Rapport minimal en cas d'erreur
+            self.logger.error(f"Erreur majeure dans la génération du rapport structuré: {e}")
             return {
-                'artifacts_created': result.get('artifacts', []),
-                'decisions_made': "Erreur lors de la génération du rapport détaillé",
-                'issues_encountered': [f"Erreur rapport: {str(e)}"],
                 'self_assessment': 'failed',
-                'confidence_level': 0.0,
-                'deliverables_status': {},
+                'assessment_reason': f'Erreur critique durant la génération du rapport: {e}',
+                'artifacts_created': result.get('artifacts', []),
+                'issues_encountered': [f"Erreur système: {e}"],
+                'confidence_level': 0.1,
+                'decisions_made': "Rapport d'erreur généré automatiquement",
                 'milestone_id': plan.get('milestone_id', 'unknown'),
                 'agent_name': self.name,
                 'completion_timestamp': datetime.now().isoformat()
@@ -934,6 +995,12 @@ RÉPONDS UNIQUEMENT AVEC LE JSON, AUCUN TEXTE AVANT OU APRÈS.
             lines.append("  Paramètres:")
             for param, desc in tool.parameters.items():
                 lines.append(f"    - {param}: {desc}")
+            
+            # Ajouter des conseils d'usage pour les outils de création
+            if tool.name in ['create_document', 'generate_architecture_diagrams', 'implement_code', 'create_tests', 'generate_configuration_files', 'create_project_file']:
+                lines.append("  💡 Conseil: Créé des fichiers de qualité qui répondent aux besoins identifiés dans l'analyse de la tâche.")
+                lines.append("  L'évaluation de la réussite se base sur la cohérence entre les livrables demandés et les artefacts produits.")
+        
         return "\n".join(lines)
     
     def answer_colleague(self, asking_agent: str, question: str) -> str:
@@ -1209,6 +1276,7 @@ Guidelines comportementales:
     def _parse_json_from_llm_response(self, response: str) -> Dict[str, Any]:
         """
         Parse intelligent de JSON depuis réponses LLM (gère markdown et formats divers).
+        DÉLÉGUÉ vers le parser centralisé pour éviter la duplication de code.
         
         Args:
             response: Réponse LLM potentiellement contenant du JSON
@@ -1216,51 +1284,10 @@ Guidelines comportementales:
         Returns:
             Dict contenant le JSON parsé, ou dict vide si échec
         """
-        import re
-        import json
+        from core.json_parser import get_json_parser
         
-        try:
-            # Nettoyer les blocs markdown JSON
-            if '```json' in response:
-                json_match = re.search(r'```json\s*(.*?)\s*```', response, re.DOTALL)
-                if json_match:
-                    json_content = json_match.group(1).strip()
-                    self.logger.debug("JSON extrait depuis bloc markdown")
-                    return json.loads(json_content)
-            
-            # Nettoyer les blocs markdown génériques
-            elif '```' in response:
-                json_match = re.search(r'```\s*(.*?)\s*```', response, re.DOTALL)
-                if json_match:
-                    json_content = json_match.group(1).strip()
-                    if json_content.startswith('{') or json_content.startswith('['):
-                        self.logger.debug("JSON extrait depuis bloc markdown générique")
-                        return json.loads(json_content)
-            
-            # Essayer de parser directement si ça ressemble à du JSON
-            response_clean = response.strip()
-            if response_clean.startswith('{') or response_clean.startswith('['):
-                self.logger.debug("JSON parsé directement")
-                return json.loads(response_clean)
-            
-            # Chercher du JSON intégré dans le texte
-            json_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
-            json_matches = re.findall(json_pattern, response)
-            if json_matches:
-                for match in json_matches:
-                    try:
-                        parsed = json.loads(match)
-                        self.logger.debug("JSON trouvé intégré dans le texte")
-                        return parsed
-                    except json.JSONDecodeError:
-                        continue
-            
-            self.logger.debug("Aucun JSON valide trouvé dans la réponse")
-            return {}
-            
-        except (json.JSONDecodeError, AttributeError, re.error) as e:
-            self.logger.warning(f"Échec parsing JSON: {e}")
-            return {}
+        parser = get_json_parser(f"{self.project_name}.{self.name}")
+        return parser.parse_llm_response(response)
     
     def generate_with_context_enriched(self, clean_prompt: str, strategic_context: str = None, **kwargs) -> str:
         """
@@ -1573,7 +1600,7 @@ Guidelines comportementales:
             if charter_path.exists():
                 charter = charter_path.read_text(encoding='utf-8')
                 if charter and len(charter) > 50:  # Validation minimale
-                    self.logger.info(f"Project Charter récupéré depuis le fichier: {charter_path}")
+                    self.logger.debug(f"Project Charter inséré depuis le fichier: {charter_path}")
                     return charter
                 else:
                     raise ValueError("Project Charter fichier vide ou trop court")
@@ -1585,7 +1612,7 @@ Guidelines comportementales:
             raise RuntimeError(f"PROJET COMPROMIS: Project Charter inaccessible pour {self.project_name}: {str(e)}")
     
     def generate_json_with_context(self, prompt: str, **kwargs) -> Dict[str, Any]:
-        """Génère une réponse JSON."""
+        """Génère une réponse JSON avec parsing robuste centralisé."""
         json_prompt = f"{prompt}\n\nRéponds uniquement avec un JSON valide."
         
         response = self.generate_with_context_enriched(
@@ -1594,15 +1621,23 @@ Guidelines comportementales:
             **kwargs
         )
         
-        try:
-            cleaned = response.strip()
-            if cleaned.startswith("```json"):
-                cleaned = cleaned[7:]
-            if cleaned.endswith("```"):
-                cleaned = cleaned[:-3]
-            return json.loads(cleaned.strip())
-        except json.JSONDecodeError:
-            return {"error": "Invalid JSON", "raw_response": response}
+        # Utiliser le parser JSON centralisé robuste
+        from core.json_parser import get_json_parser
+        
+        parser = get_json_parser(f"{self.project_name}.{self.name}")
+        result = parser.parse_llm_response(response)
+        
+        if not result:
+            # ÉCHEC PARSING - Retourner un marqueur d'échec pour escalade
+            error_msg = f"ÉCHEC PARSING JSON - Agent {self.name} - Réponse LLM: {response[:500]}..."
+            self.logger.error(error_msg)
+            return {
+                "parsing_failed": True,
+                "raw_response": response,
+                "error": f"Parser JSON a échoué pour {self.name}"
+            }
+        
+        return result
     
     def __str__(self) -> str:
         return f"{self.name} ({self.role})"

@@ -7,6 +7,7 @@ import os
 import time
 import json
 import threading
+import signal
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List, Union
 from datetime import datetime, timedelta
@@ -25,6 +26,14 @@ from core.global_rate_limiter import global_rate_limiter
 
 # Créer un verrou global unique pour tous les appels LLM
 _llm_execution_lock = threading.Lock()
+
+class TimeoutError(Exception):
+    """Exception levée en cas de timeout LLM."""
+    pass
+
+def timeout_handler(signum, frame):
+    """Handler pour le timeout."""
+    raise TimeoutError("Timeout LLM atteint")
 
 
 class LLMConnector(ABC):
@@ -163,16 +172,30 @@ class MistralConnector(LLMConnector):
                 retry_delay = default_config['general']['retry_delay']
                 
                 for attempt in range(max_retries):
+                    if attempt > 0:
+                        self.logger.info(f"🔄 Tentative {attempt + 1}/{max_retries} après échec")
                     try:
                         # Appliquer le rate limiting global avant la requête
                         self._enforce_rate_limit()
                         
-                        # On passe les paramètres fusionnés directement à l'API
-                        response = self.client.chat.complete(
-                            model=self.model,
-                            messages=messages,
-                            **params
-                        )
+                        # Configuration du timeout
+                        timeout_seconds = int(default_config['general']['llm_timeout'])
+                        
+                        # Définir le handler de timeout
+                        old_handler = signal.signal(signal.SIGALRM, timeout_handler)
+                        signal.alarm(timeout_seconds)
+                        
+                        try:
+                            # On passe les paramètres fusionnés directement à l'API
+                            response = self.client.chat.complete(
+                                model=self.model,
+                                messages=messages,
+                                **params
+                            )
+                        finally:
+                            # Toujours annuler le timeout et restaurer le handler
+                            signal.alarm(0)
+                            signal.signal(signal.SIGALRM, old_handler)
                         
                         result = response.choices[0].message.content
                         duration = time.time() - start_time
@@ -203,12 +226,34 @@ class MistralConnector(LLMConnector):
 
                         return result
                         
-                    except Exception as e:
+                    except TimeoutError as e:
+                        duration = time.time() - start_time
+                        error_msg = f"🚫 TIMEOUT LLM après {timeout_seconds}s (durée réelle: {duration:.1f}s) - Modèle: {self.model}"
+                        self.logger.error(error_msg)
+                        
                         if attempt < max_retries - 1:
-                            self.logger.warning(f"Tentative {attempt + 1} échouée: {str(e)}")
+                            self.logger.warning(f"Nouvelle tentative {attempt + 2}/{max_retries} après timeout...")
                             time.sleep(retry_delay)
                         else:
-                            raise
+                            raise Exception(f"TIMEOUT LLM DÉFINITIF: {error_msg}")
+                        
+                    except Exception as e:
+                        if "timeout" in str(e).lower() or "time" in str(e).lower():
+                            duration = time.time() - start_time
+                            error_msg = f"🚫 TIMEOUT LLM détecté après {duration:.1f}s - Modèle: {self.model} - Erreur: {str(e)}"
+                            self.logger.error(error_msg)
+                            
+                            if attempt < max_retries - 1:
+                                self.logger.warning(f"Nouvelle tentative {attempt + 2}/{max_retries} après timeout...")
+                                time.sleep(retry_delay)
+                            else:
+                                raise Exception(f"TIMEOUT LLM DÉFINITIF: {error_msg}")
+                        else:
+                            if attempt < max_retries - 1:
+                                self.logger.warning(f"Tentative {attempt + 1} échouée: {str(e)}")
+                                time.sleep(retry_delay)
+                            else:
+                                raise
                             
             except Exception as e:
                 self.logger.error(f"Erreur lors de la génération Mistral: {str(e)}")
@@ -236,15 +281,29 @@ class MistralConnector(LLMConnector):
                 retry_delay = default_config['general']['retry_delay']
                 
                 for attempt in range(max_retries):
+                    if attempt > 0:
+                        self.logger.info(f"🔄 Tentative {attempt + 1}/{max_retries} après échec")
                     try:
                         # Appliquer le rate limiting global avant la requête
                         self._enforce_rate_limit()
                         
-                        response = self.client.chat.complete(
-                            model=self.model,
-                            messages=messages,
-                            **params
-                        )
+                        # Configuration du timeout
+                        timeout_seconds = int(default_config['general']['llm_timeout'])
+                        
+                        # Définir le handler de timeout
+                        old_handler = signal.signal(signal.SIGALRM, timeout_handler)
+                        signal.alarm(timeout_seconds)
+                        
+                        try:
+                            response = self.client.chat.complete(
+                                model=self.model,
+                                messages=messages,
+                                **params
+                            )
+                        finally:
+                            # Toujours annuler le timeout et restaurer le handler
+                            signal.alarm(0)
+                            signal.signal(signal.SIGALRM, old_handler)
                         
                         result = response.choices[0].message.content
                         duration = time.time() - start_time
@@ -264,12 +323,34 @@ class MistralConnector(LLMConnector):
                         
                         return result
                         
-                    except Exception as e:
+                    except TimeoutError as e:
+                        duration = time.time() - start_time
+                        error_msg = f"🚫 TIMEOUT LLM après {timeout_seconds}s (durée réelle: {duration:.1f}s) - Modèle: {self.model}"
+                        self.logger.error(error_msg)
+                        
                         if attempt < max_retries - 1:
-                            self.logger.warning(f"Tentative {attempt + 1} échouée: {str(e)}")
+                            self.logger.warning(f"Nouvelle tentative {attempt + 2}/{max_retries} après timeout...")
                             time.sleep(retry_delay)
                         else:
-                            raise
+                            raise Exception(f"TIMEOUT LLM DÉFINITIF: {error_msg}")
+                            
+                    except Exception as e:
+                        if "timeout" in str(e).lower() or "time" in str(e).lower():
+                            duration = time.time() - start_time
+                            error_msg = f"🚫 TIMEOUT LLM détecté après {duration:.1f}s - Modèle: {self.model} - Erreur: {str(e)}"
+                            self.logger.error(error_msg)
+                            
+                            if attempt < max_retries - 1:
+                                self.logger.warning(f"Nouvelle tentative {attempt + 2}/{max_retries} après timeout...")
+                                time.sleep(retry_delay)
+                            else:
+                                raise Exception(f"TIMEOUT LLM DÉFINITIF: {error_msg}")
+                        else:
+                            if attempt < max_retries - 1:
+                                self.logger.warning(f"Tentative {attempt + 1} échouée: {str(e)}")
+                                time.sleep(retry_delay)
+                            else:
+                                raise
                             
             except Exception as e:
                 self.logger.error(f"Erreur lors de la génération Mistral avec messages: {str(e)}")
@@ -307,30 +388,23 @@ class MistralConnector(LLMConnector):
             **kwargs
         )
         
-        # Nettoyer la réponse et parser le JSON
-        try:
-            # Retirer les éventuels marqueurs de code
-            cleaned = response.strip()
-            if cleaned.startswith("```json"):
-                cleaned = cleaned[7:]
-            if cleaned.endswith("```"):
-                cleaned = cleaned[:-3]
-            cleaned = cleaned.strip()
-            
-            result = json.loads(cleaned)
-            
-            # Valider contre le schéma si fourni
-            if schema:
-                self._validate_json_schema(result, schema)
-            
-            #time.sleep(1)
-            return result
-            
-        except json.JSONDecodeError as e:
-            self.logger.error(f"Erreur de parsing JSON: {str(e)}")
+        # Utiliser le parser JSON centralisé robuste
+        from core.json_parser import get_json_parser
+        
+        parser = get_json_parser(f"LLMConnector.{self.__class__.__name__}")
+        result = parser.parse_universal(response, return_type='dict')
+        
+        if not result:
+            self.logger.error(f"ÉCHEC TOTAL parsing JSON avec toutes les stratégies")
             self.logger.debug(f"Réponse brute: {response}")
-            # Essayer de réparer le JSON
-            return self._try_repair_json(response)
+            return {"error": "Could not parse JSON with any strategy", "raw_response": response}
+        
+        # Valider contre le schéma si fourni
+        if schema:
+            self._validate_json_schema(result, schema)
+        
+        #time.sleep(1)
+        return result
     
     def _validate_json_schema(self, data: Dict[str, Any], schema: Dict[str, Any]) -> None:
         """
@@ -344,23 +418,17 @@ class MistralConnector(LLMConnector):
     
     def _try_repair_json(self, response: str) -> Dict[str, Any]:
         """
-        Essaie de réparer un JSON invalide.
+        DEPRECATED: Utilise maintenant le parser centralisé robuste.
         """
-        # Stratégies de réparation simples
-        attempts = [
-            response,
-            response.replace("'", '"'),  # Remplacer quotes simples
-            '{"error": "Invalid JSON", "raw": ' + json.dumps(response) + '}',
-        ]
+        from core.json_parser import get_json_parser
         
-        for attempt in attempts:
-            try:
-                return json.loads(attempt)
-            except:
-                continue
+        parser = get_json_parser(f"LLMConnector.RepairJSON")
+        result = parser.parse_universal(response, return_type='dict')
         
-        # Si tout échoue, retourner une erreur structurée
-        return {"error": "Could not parse JSON", "raw_response": response}
+        if not result:
+            return {"error": "Could not parse JSON with any strategy", "raw_response": response}
+        
+        return result
 
 
 
@@ -389,6 +457,8 @@ class MistralEmbedConnector:
             retry_delay = default_config['general']['retry_delay']
             
             for attempt in range(max_retries):
+                if attempt > 0:
+                    self.logger.info(f"🔄 Tentative {attempt + 1}/{max_retries} après échec")
                 try:
                     # Appliquer le rate limiting global avant la requête
                     self._enforce_rate_limit()
@@ -493,6 +563,8 @@ class DeepSeekConnector(LLMConnector):
                 retry_delay = default_config['general']['retry_delay']
                 
                 for attempt in range(max_retries):
+                    if attempt > 0:
+                        self.logger.info(f"🔄 Tentative {attempt + 1}/{max_retries} après échec")
                     try:
                         # Appliquer le rate limiting global avant la requête
                         self._enforce_rate_limit()
@@ -531,12 +603,36 @@ class DeepSeekConnector(LLMConnector):
                         
                         return result
                         
-                    except Exception as e:
+                    except httpx.TimeoutException as e:
+                        duration = time.time() - start_time  
+                        timeout_seconds = default_config['general']['llm_timeout']
+                        error_msg = f"🚫 TIMEOUT DeepSeek après {timeout_seconds}s (durée réelle: {duration:.1f}s) - Modèle: {self.model}"
+                        self.logger.error(error_msg)
+                        
                         if attempt < max_retries - 1:
-                            self.logger.warning(f"Tentative {attempt + 1} échouée: {str(e)}")
+                            self.logger.warning(f"Nouvelle tentative {attempt + 2}/{max_retries} après timeout DeepSeek...")
                             time.sleep(retry_delay)
                         else:
-                            raise
+                            raise Exception(f"TIMEOUT DEEPSEEK DÉFINITIF: {error_msg}")
+                            
+                    except Exception as e:
+                        if "timeout" in str(e).lower() or "time" in str(e).lower():
+                            duration = time.time() - start_time
+                            timeout_seconds = default_config['general']['llm_timeout']
+                            error_msg = f"🚫 TIMEOUT DeepSeek détecté après {duration:.1f}s - Modèle: {self.model} - Erreur: {str(e)}"
+                            self.logger.error(error_msg)
+                            
+                            if attempt < max_retries - 1:
+                                self.logger.warning(f"Nouvelle tentative {attempt + 2}/{max_retries} après timeout DeepSeek...")
+                                time.sleep(retry_delay)
+                            else:
+                                raise Exception(f"TIMEOUT DEEPSEEK DÉFINITIF: {error_msg}")
+                        else:
+                            if attempt < max_retries - 1:
+                                self.logger.warning(f"Tentative {attempt + 1} échouée: {str(e)}")
+                                time.sleep(retry_delay)
+                            else:
+                                raise
                             
             except Exception as e:
                 self.logger.error(f"Erreur lors de la génération DeepSeek: {str(e)}")
@@ -567,6 +663,8 @@ class DeepSeekConnector(LLMConnector):
                 retry_delay = default_config['general']['retry_delay']
                 
                 for attempt in range(max_retries):
+                    if attempt > 0:
+                        self.logger.info(f"🔄 Tentative {attempt + 1}/{max_retries} après échec")
                     try:
                         # Appliquer le rate limiting global avant la requête
                         self._enforce_rate_limit()
@@ -595,12 +693,36 @@ class DeepSeekConnector(LLMConnector):
                         
                         return result
                         
-                    except Exception as e:
+                    except httpx.TimeoutException as e:
+                        duration = time.time() - start_time  
+                        timeout_seconds = default_config['general']['llm_timeout']
+                        error_msg = f"🚫 TIMEOUT DeepSeek après {timeout_seconds}s (durée réelle: {duration:.1f}s) - Modèle: {self.model}"
+                        self.logger.error(error_msg)
+                        
                         if attempt < max_retries - 1:
-                            self.logger.warning(f"Tentative {attempt + 1} échouée: {str(e)}")
+                            self.logger.warning(f"Nouvelle tentative {attempt + 2}/{max_retries} après timeout DeepSeek...")
                             time.sleep(retry_delay)
                         else:
-                            raise
+                            raise Exception(f"TIMEOUT DEEPSEEK DÉFINITIF: {error_msg}")
+                            
+                    except Exception as e:
+                        if "timeout" in str(e).lower() or "time" in str(e).lower():
+                            duration = time.time() - start_time
+                            timeout_seconds = default_config['general']['llm_timeout']
+                            error_msg = f"🚫 TIMEOUT DeepSeek détecté après {duration:.1f}s - Modèle: {self.model} - Erreur: {str(e)}"
+                            self.logger.error(error_msg)
+                            
+                            if attempt < max_retries - 1:
+                                self.logger.warning(f"Nouvelle tentative {attempt + 2}/{max_retries} après timeout DeepSeek...")
+                                time.sleep(retry_delay)
+                            else:
+                                raise Exception(f"TIMEOUT DEEPSEEK DÉFINITIF: {error_msg}")
+                        else:
+                            if attempt < max_retries - 1:
+                                self.logger.warning(f"Tentative {attempt + 1} échouée: {str(e)}")
+                                time.sleep(retry_delay)
+                            else:
+                                raise
                             
             except Exception as e:
                 self.logger.error(f"Erreur lors de la génération DeepSeek avec messages: {str(e)}")
@@ -637,18 +759,17 @@ class DeepSeekConnector(LLMConnector):
             **kwargs
         )
         
-        try:
-            cleaned = response.strip()
-            if cleaned.startswith("```json"):
-                cleaned = cleaned[7:]
-            if cleaned.endswith("```"):
-                cleaned = cleaned[:-3]
-            
-            return json.loads(cleaned.strip())
-            
-        except json.JSONDecodeError:
+        # Utiliser le parser JSON centralisé robuste
+        from core.json_parser import get_json_parser
+        
+        parser = get_json_parser(f"DeepSeekConnector")
+        result = parser.parse_universal(response, return_type='dict')
+        
+        if not result:
             self.logger.error("Erreur de parsing JSON")
             return {"error": "Invalid JSON", "raw": response}
+        
+        return result
     
     def __del__(self):
         """Ferme le client HTTP."""

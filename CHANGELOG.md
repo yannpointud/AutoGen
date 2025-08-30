@@ -2,9 +2,46 @@
 
 Toutes les modifications notables de ce projet sont documentées dans ce fichier.
 
-Le format est basé sur [Keep a Changelog](https://keepachangelog.com/fr/1.0.0/),
-et ce projet adhère au [Versioning Sémantique](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.1] - 2025-08-30
+### 🐛 Corrigé
+  - **Bug critique escalation system** : Correction du mapping report_type dans base_agent.py - les agents envoyaient toujours 'completion' au lieu de mapper correctement 'failed' → 'issue', 'partial' → 'progress'
+  - **Amélioration prompt auto-évaluation** : Clarification des critères de completion avec seuils explicites (100%, 25%, 75%) pour réduire l'ambiguïté des évaluations
+  ### **Important** : les tests unitaires devront etres adaptés pour refleter la nouvelle logique
+
+## [1.6.0] - 2025-08-29
+### 🔧 Amélioré
+  - **Changement architecture autoevaluation** : Nouveau systeme d'appel LLM lightweight pour autoevaluation a la fin d'un think-act pour report au superviseur
+  - **Centralisation parsing** : Fichier `json_parser.py` crée pour centraliser logique parsing
+
+## [1.5.0] - 2025-08-27
+
+### 🔧 Amélioré
+  - **Refacto complète gestion des jalons** : Remplacement double gestion ID par IDs séquentiels unifiés avec renumbering automatique
+  - **Interface utilisateur superviseur** : 3 choix clairs + analyse LLM intelligente pour ajustements de plan
+  - **Timing d'évaluation corrigé** : Évaluations uniquement en fin de jalon au lieu de pendant l'exécution
+  - **Navigation des jalons** : Correction avancement automatique après insertion corrections et modifications de plan
+  - **Système corrections simplifié** : Compteur global unique remplace les multiples compteurs de corrections
+  - ## **Important** : Le systeme devra etre amélioré pour doter les agents de meilleurs outils de vérification
+
+### 🐛 Corrigé
+  - **Échec insertion corrections** : Correction erreur "Jalon X non trouvé" causée par références vers jalons supprimés
+  - **Race conditions jalons** : Synchronisation compteurs et journalisation pour cohérence des progressions
+  - **Interface ambiguë** : "Valider jalon" créait des corrections au lieu d'approuver les jalons
+  - ## **Bug detecté** : L'analyst n'arrive pas a faire correspondre dans deliverables_mappings certaines demandes du superviseur (diagrammes)
+
+## [1.4.0] - 2025-08-26
+
+### 🐛 Corrigé
+  - **Timeout LLM hs** : Correction de mauvaise gestion du parametre de timeout. 
+  - **logique défaillante dans base_agent.py** : Correction verifie l'existence de fichier dans self_assessment
+
+### 🔧 Amélioré  
+  - **Mapping explicite des livrables** : Implémentation système obligatoire `fulfills_deliverable` pour tous les outils de création. 
+  - Résout les faux positifs/négatifs dans la vérification des livrables par correspondance exacte au lieu de devinette de noms.
+
+### 🎉 Ajouté
+  - **Human in the loop** : Intégration du protocole d'escalade utilisateur apres echec de rework ou adjust_plan par le `supervisor.py`
 
 ## [1.3.2] - 2025-08-25
 

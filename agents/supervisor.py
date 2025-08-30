@@ -15,14 +15,150 @@ from agents.developer import Developer
 
 from core.llm_connector import LLMFactory
 from core.rag_engine import RAGEngine
+from core.cli_interface import CLIInterface
 from config import default_config
+from rich.prompt import Prompt
 from tools.supervisor_tools import (
     tool_assign_agents_to_milestone,
     tool_get_progress_report,
     tool_add_milestone,
     tool_modify_milestone,
-    tool_remove_milestone
+    tool_remove_milestone,
+    tool_add_correction
 )
+
+
+class _UnifiedMilestoneManager:
+    """Manager unifié pour les jalons du Supervisor - IDs séquentiels 1,2,3..."""
+    
+    def __init__(self, supervisor):
+        self.supervisor = supervisor
+        self.milestones = []
+        self.current_index = 0
+    
+    def _create_milestone_structure(self, **data):
+        """Crée la structure de base d'un jalon (méthode utilitaire unifiée)."""
+        return {
+            'id': 0,  # sera assigné par _assign_sequential_ids()
+            'status': 'pending',
+            'created_at': datetime.now().isoformat(),
+            **data
+        }
+    
+    def _assign_sequential_ids(self):
+        """Assigne des IDs séquentiels 1,2,3... à tous les jalons."""
+        for i, milestone in enumerate(self.milestones, 1):
+            milestone['id'] = i
+    
+    # CAS 1: Création jalons initiaux
+    def create_initial_milestones(self, milestones_data):
+        """Créer les jalons initiaux avec IDs séquentiels 1,2,3..."""
+        self.milestones = []
+        self.current_index = 0
+        
+        for data in milestones_data:
+            milestone = self._create_milestone_structure(**data)
+            self.milestones.append(milestone)
+        
+        self._assign_sequential_ids()
+        self.supervisor.logger.info(f"Création de {len(self.milestones)} jalons initiaux avec IDs séquentiels")
+        return self.milestones
+    
+    # CAS 2: Rework → insertion avec décalage d'IDs
+    def insert_correction_after_current(self, **data):
+        """Insérer correction après courant, décaler les IDs futurs +1."""
+        current = self.get_current_milestone()
+        if not current:
+            # Fallback: ajouter à la fin
+            milestone = self._create_milestone_structure(**data)
+            self.milestones.append(milestone)
+        else:
+            # Insertion après position courante
+            insert_position = self.current_index + 1
+            correction = self._create_milestone_structure(correction_of=current['id'], **data)
+            self.milestones.insert(insert_position, correction)
+        
+        # Renuméroter TOUS les jalons pour maintenir la séquence 1,2,3...
+        self._assign_sequential_ids()
+        
+        correction_id = self.milestones[self.current_index + 1]['id'] if self.current_index + 1 < len(self.milestones) else len(self.milestones)
+        self.supervisor.logger.info(f"Jalon de correction {correction_id} inséré avec décalage des IDs futurs")
+        return self.milestones[self.current_index + 1] if self.current_index + 1 < len(self.milestones) else self.milestones[-1]
+    
+    # CAS 3: Adjust_plan → remplacement total des futurs
+    def replace_future_milestones(self, new_milestones_data):
+        """Préserver jalons complétés, remplacer totalement les futurs."""
+        # Préserver jalons jusqu'au courant inclus (immutables)
+        preserved = self.milestones[:self.current_index + 1] if self.milestones else []
+        
+        # Ajouter nouveaux jalons futurs
+        for data in new_milestones_data:
+            milestone = self._create_milestone_structure(**data)
+            preserved.append(milestone)
+        
+        self.milestones = preserved
+        
+        # Renuméroter TOUS pour maintenir séquence 1,2,3...
+        self._assign_sequential_ids()
+        
+        # Repositionner index
+        if new_milestones_data:
+            # Avancer vers le premier nouveau jalon
+            self.current_index += 1
+        else:
+            # Aucun nouveau jalon = fin de projet
+            self.current_index = len(self.milestones)
+        
+        self.supervisor.logger.info(f"Remplacement jalons futurs: {len(preserved)} total, IDs renumérotés séquentiellement")
+    
+    
+    def complete_current_and_advance(self, status='completed'):
+        """Finaliser le jalon courant et passer au suivant."""
+        if self.current_index < len(self.milestones):
+            self.milestones[self.current_index]['status'] = status
+            self.milestones[self.current_index]['completed_at'] = datetime.now().isoformat()
+            self.current_index += 1
+    
+    def get_current_milestone(self):
+        """Retourne le jalon actuellement en cours."""
+        if self.current_index < len(self.milestones):
+            return self.milestones[self.current_index]
+        return None
+    
+    def replace_future_milestones(self, new_milestones):
+        """Remplacer tous les jalons futurs (modification de plan)."""
+        # Conserver tous les jalons jusqu'au courant inclus
+        preserved = self.milestones[:self.current_index + 1] if self.milestones else []
+        completed_count = len(preserved)
+        
+        # Ajouter les nouveaux jalons futurs
+        for data in new_milestones:
+            milestone = {
+                'id': 0,  # sera assigné par _assign_sequential_ids()
+                'status': 'pending',
+                'created_at': datetime.now().isoformat(),
+                **data
+            }
+            preserved.append(milestone)
+        
+        self.milestones = preserved
+        
+        # Assigner les IDs séquentiels 1,2,3...
+        self._assign_sequential_ids()
+        
+        # Repositionner l'index sur le premier nouveau jalon (ou au-delà si aucun)
+        if new_milestones:
+            self.current_index = completed_count
+        else:
+            self.current_index = len(preserved)
+    
+    def find_milestone(self, milestone_id):
+        """Recherche simple par ID."""
+        str_id = str(milestone_id)
+        for milestone in self._milestone_manager.milestones:
+            if str(milestone['id']) == str_id:
+                return milestone
+        return None
 
 
 class Supervisor(BaseAgent):
@@ -51,15 +187,17 @@ class Supervisor(BaseAgent):
         )
         
         self.project_prompt = project_prompt
-        self.max_corrections = supervisor_config.get('max_corrections', 3)
+        self.max_global_corrections = supervisor_config.get('max_global_corrections', 5)
+        
+        # Mécanisme d'arrêt pour l'orchestration
+        self._orchestration_halted = False
        
         # RAG singleton pour les agents
         self.rag_singleton = rag_engine
         
-        # Gestion des jalons et agents
-        self.milestones = []
+        # Gestion des jalons et agents  
+        self._milestone_manager = _UnifiedMilestoneManager(self)
         self.agents = {}
-        self.current_milestone_index = 0
         
         # Buffer des rapports par jalon
         self.current_milestone_reports = []
@@ -70,7 +208,8 @@ class Supervisor(BaseAgent):
             'status': 'initialized',
             'started_at': datetime.now().isoformat(),
             'milestones_completed': 0,
-            'current_phase': 'planning'
+            'current_phase': 'planning',
+            'total_corrections': 0  # Compteur global de corrections (reworks + plan modifications)
         }
         
         # Configuration
@@ -139,16 +278,31 @@ class Supervisor(BaseAgent):
             lambda params: tool_modify_milestone(self, params)
         )
         
-        # remove_milestone
+        # remove_milestone (obsolète)
         self.register_tool(
             Tool(
                 "remove_milestone",
-                "Supprime un jalon (seulement si pas commencé)",
+                "OBSOLÈTE - Suppression non supportée dans le système immutable",
                 {
                     "milestone_id": "ID du jalon à supprimer"
                 }
             ),
             lambda params: tool_remove_milestone(self, params)
+        )
+        
+        # add_correction
+        self.register_tool(
+            Tool(
+                "add_correction",
+                "Ajoute un jalon de correction après le jalon courant",
+                {
+                    "name": "Nom du jalon de correction",
+                    "description": "Description de la correction à effectuer",
+                    "agents_required": "Liste des agents requis (optionnel)",
+                    "deliverables": "Liste des livrables de correction (optionnel)"
+                }
+            ),
+            lambda params: tool_add_correction(self, params)
         )
     
     def think(self, task: Dict[str, Any]) -> Dict[str, Any]:
@@ -164,7 +318,7 @@ class Supervisor(BaseAgent):
         project_prompt = task.get('prompt', self.project_prompt)
         
         # === LOGIQUE CONDITIONNELLE ===
-        is_initial_planning = not self.milestones
+        is_initial_planning = len(self._milestone_manager.milestones) == 0
         
         # Choisir la méthode de génération appropriée
         if is_initial_planning:
@@ -265,8 +419,8 @@ Format obligatoire:
                 'timestamp': datetime.now().isoformat()
             }
             
-            # Sauvegarder les jalons
-            self.milestones = milestones
+            # Les jalons sont déjà ajoutés via le manager dans _create_milestones_from_analysis
+            # Pas besoin de réassignation directe
             
             self.log_interaction('think', plan)
             return plan
@@ -285,7 +439,7 @@ Format obligatoire:
         result = {
             'task_id': plan.get('task_id'),
             'status': 'in_progress',
-            'milestones_created': len(self.milestones),
+            'milestones_created': len(self._milestone_manager.milestones),
             'agents_created': 0
         }
         
@@ -296,7 +450,7 @@ Format obligatoire:
             
             # Partager le plan via le RAG
             if self.rag_engine:
-                plan_summary = f"Plan projet: {len(self.milestones)} jalons"
+                plan_summary = f"Plan projet: {len(self._milestone_manager.milestones)} jalons"
                 self.rag_engine.index_to_working_memory(
                     plan_summary,
                     {
@@ -359,19 +513,19 @@ Format obligatoire:
         }
         
         try:
-            while self.current_milestone_index < len(self.milestones):
-                milestone = self.milestones[self.current_milestone_index]
+            while (current_milestone := self._milestone_manager.get_current_milestone()) and not self._orchestration_halted:
+                milestone = current_milestone
                 
                 # Exécution du jalon
-                self.logger.info(f"Exécution du jalon {milestone['id']}: {milestone['name']}")
+                self.logger.info(f"📍 Exécution du jalon {milestone['id']}: {milestone['name']}")
                 for agent in self.agents.values():
-                    agent.update_state(current_milestone_id=milestone['milestone_id'])
+                    agent.update_state(current_milestone_id=f"milestone_{milestone['id']}")
                 
                 milestone_result = self._execute_milestone(milestone)
                 orchestration_result['milestones_results'].append(milestone_result)
                 
                 # PHASE 2: Vérification intelligente du jalon
-                self.logger.info(f"Vérification du jalon {milestone['id']}...")
+                self.logger.info(f"🔍 Vérification du jalon {milestone['id']}...")
                 verification_decision = self._verify_milestone_completion(milestone, milestone_result)
                 
                 # PHASE 3: Application de la décision de vérification
@@ -483,7 +637,7 @@ Format obligatoire:
             # Créer la tâche pour l'agent
             task = {
                 'milestone': milestone['name'],
-                'milestone_id': milestone['milestone_id'],
+                'milestone_id': f"milestone_{milestone['id']}",
                 'description': milestone['description'],
                 'deliverables': milestone.get('deliverables', []),
                 'project_prompt': self.project_prompt
@@ -541,7 +695,6 @@ Réponds uniquement avec un JSON valide:
 {{
     "milestones": [
         {{
-            "id": 1,
             "name": "Nom du jalon",
             "description": "Description détaillée",
             "agents_required": ["analyst", "developer"],
@@ -569,17 +722,19 @@ Réponds uniquement avec un JSON valide:
             
             milestones = response.get('milestones', [])
             
-            # Valider et enrichir
-            for i, m in enumerate(milestones):
-                m['id'] = m.get('id', i + 1)
-                m['milestone_id'] = f"milestone_{m['id']}"
-                m['status'] = 'pending'
+            # Valider et créer via le manager unifié
+            validated_milestones = []
+            for m in milestones[:self.max_milestones]:
+                # Valider les agents requis
                 m['agents_required'] = [a for a in m.get('agents_required', []) 
                                        if a in ['analyst', 'developer']]
                 if not m['agents_required']:
                     m['agents_required'] = ['analyst']
+                
+                validated_milestones.append(m)
             
-            return milestones[:self.max_milestones]
+            # Créer tous les jalons avec IDs séquentiels
+            return self._milestone_manager.create_initial_milestones(validated_milestones)
 
         except Exception as e:
             # Logguer l'erreur spécifique pour le débogage
@@ -588,42 +743,37 @@ Réponds uniquement avec un JSON valide:
             return self._get_default_milestones()
     
     def _get_default_milestones(self) -> List[Dict[str, Any]]:
-        """Retourne des jalons par défaut."""
-        return [
+        """Retourne des jalons par défaut via le manager."""
+        # Créer les jalons via le manager pour avoir les IDs corrects
+        default_milestones_data = [
             {
-                'id': 1,
-                'milestone_id': 'milestone_1',
                 'name': 'Analyse et Conception',
                 'description': 'Analyser les besoins et concevoir l\'architecture',
                 'agents_required': ['analyst'],
                 'deliverables': ['requirements.md', 'architecture.md'],
                 'estimated_duration': '2 minutes',
-                'dependencies': [],
-                'status': 'pending'
+                'dependencies': []
             },
             {
-                'id': 2,
-                'milestone_id': 'milestone_2',
                 'name': 'Implémentation',
                 'description': 'Implémenter le code et les tests',
                 'agents_required': ['developer'],
                 'deliverables': ['src/', 'tests/'],
                 'estimated_duration': '4 minutes',
-                'dependencies': [1],
-                'status': 'pending'
+                'dependencies': []
             },
             {
-                'id': 3,
-                'milestone_id': 'milestone_3',
                 'name': 'Documentation et Finalisation',
                 'description': 'Finaliser la documentation et les configurations',
                 'agents_required': ['analyst', 'developer'],
                 'deliverables': ['README.md', 'config/'],
                 'estimated_duration': '1 minutes',
-                'dependencies': [2],
-                'status': 'pending'
+                'dependencies': []
             }
         ]
+        
+        # Créer via le manager unifié avec IDs séquentiels
+        return self._milestone_manager.create_initial_milestones(default_milestones_data)
     
     def _create_fallback_plan(self, project_prompt: str) -> Dict[str, Any]:
         """Crée un plan de secours."""
@@ -650,13 +800,13 @@ Réponds uniquement avec un JSON valide:
 
 ## Vue d'ensemble
 - **Prompt initial**: {self.project_prompt[:200]}...
-- **Jalons complétés**: {self.project_state['milestones_completed']}/{len(self.milestones)}
+- **Jalons complétés**: {self.project_state['milestones_completed']}/{len(self._milestone_manager.milestones)}
 - **Artifacts créés**: {total_artifacts}
 
 ## Jalons exécutés
 """
         
-        for milestone in self.milestones:
+        for milestone in self._milestone_manager.milestones:
             if milestone['status'] == 'completed':
                 status = "✅"
             elif milestone['status'] == 'partially_completed':
@@ -671,8 +821,7 @@ Réponds uniquement avec un JSON valide:
             # Ajouter des détails pour les jalons partiellement complétés
             if milestone['status'] == 'partially_completed':
                 reason = milestone.get('partial_completion_reason', 'Raison non spécifiée')
-                attempts = milestone.get('correction_attempts', 0)
-                summary += f"   - ⚠️ **Statut**: Partiellement complété ({attempts} tentatives de correction)\n"
+                summary += f"   - ⚠️ **Statut**: Partiellement complété\n"
                 summary += f"   - **Raison**: {reason}\n"
         
         # Sauvegarder
@@ -744,14 +893,14 @@ Fournis une solution concrète et actionnable.
     def _update_plan_in_rag(self, change_description: str) -> None:
         """Met à jour le plan dans le RAG après modification."""
         if self.rag_engine:
-            plan_summary = f"Plan modifié: {change_description}. Jalons actuels: {len(self.milestones)}"
+            plan_summary = f"Plan modifié: {change_description}. Jalons actuels: {len(self._milestone_manager.milestones)}"
             self.rag_engine.index_to_working_memory(
                 plan_summary,
                 {
                     'type': 'plan_modification',
                     'agent_name': self.name,
                     'change': change_description,
-                    'milestone_count': len(self.milestones)
+                    'milestone_count': len(self._milestone_manager.milestones)
                 }
             )
     
@@ -760,10 +909,9 @@ Fournis une solution concrète et actionnable.
         try:
             # Construire le contexte pour l'évaluation
             current_milestone = None
-            if self.current_milestone_index < len(self.milestones):
-                current_milestone = self.milestones[self.current_milestone_index]
+            current_milestone = self._milestone_manager.get_current_milestone()
             
-            remaining_milestones = self.milestones[self.current_milestone_index:]
+            remaining_milestones = self._milestone_manager.milestones[self._milestone_manager.current_index:]
             
             evaluation_prompt = f"""Tu es le superviseur du projet {self.project_name}.
 
@@ -887,7 +1035,7 @@ Sois conservateur : ne propose des changements que si vraiment nécessaire."""
             for change in evaluation.get('suggested_changes', []):
                 entry += f"- {change.get('action', 'unknown').upper()}: {change.get('details', {})}\n"
             
-            entry += f"\n**État du projet**: {self.project_state['milestones_completed']}/{len(self.milestones)} jalons terminés\n\n---\n"
+            entry += f"\n**État du projet**: {self.project_state['milestones_completed']}/{len(self._milestone_manager.milestones)} jalons terminés\n\n---\n"
             
             # Ajouter au journal
             if journal_path.exists():
@@ -922,19 +1070,14 @@ Sois conservateur : ne propose des changements que si vraiment nécessaire."""
         
         # Reset du buffer si changement de jalon
         if reported_milestone != self.current_milestone_id:
-            self.logger.info(f"Changement de jalon détecté: {self.current_milestone_id} → {reported_milestone}")
+            self.logger.info(f"➡️  Changement de jalon détecté: {self.current_milestone_id} → {reported_milestone}")
             self._reset_milestone_buffer(reported_milestone)
         
         # Stocker tous les rapports dans le buffer
         self.current_milestone_reports.append(report)
         self.logger.debug(f"Rapport de {agent_name} stocké dans le buffer ({len(self.current_milestone_reports)} rapports)")
         
-        # Évaluer UNIQUEMENT sur rapport automatique
-        content = report.get('content', {})
-        if content.get('type') == 'automatic':
-            self.logger.info(f"Rapport automatique de {agent_name} reçu - Déclenchement de l'évaluation du jalon")
-            self._evaluate_milestone_with_context()
-            # Ne pas reset le buffer ici - garde historique pour debugging
+        # Les rapports sont stockés dans le buffer pour évaluation en fin de jalon
     
     def _extract_milestone_from_report(self, agent_name: str, report: Dict[str, Any]) -> str:
         """Extrait l'ID du jalon depuis un rapport."""
@@ -946,8 +1089,9 @@ Sois conservateur : ne propose des changements que si vraiment nécessaire."""
                 return agent.current_milestone_id
         
         # Fallback: utiliser l'index du jalon actuel
-        if self.current_milestone_index < len(self.milestones):
-            return self.milestones[self.current_milestone_index].get('milestone_id', f'milestone_{self.current_milestone_index}')
+        current_milestone = self._milestone_manager.get_current_milestone()
+        if current_milestone:
+            return f"milestone_{current_milestone['id']}"
         
         return 'unknown'
     
@@ -964,7 +1108,7 @@ Sois conservateur : ne propose des changements que si vraiment nécessaire."""
             automatic_reports = [r for r in self.current_milestone_reports if r.get('content', {}).get('type') == 'automatic']
             manual_reports = [r for r in self.current_milestone_reports if r.get('content', {}).get('type') == 'manual']
             
-            self.logger.info(f"Évaluation du jalon {self.current_milestone_id} avec {len(automatic_reports)} rapports automatiques et {len(manual_reports)} rapports manuels")
+            self.logger.info(f"🔍 Évaluation du jalon {self.current_milestone_id} avec {len(automatic_reports)} rapports automatiques et {len(manual_reports)} rapports manuels")
             
             # Analyser le dernier rapport automatique pour la décision technique
             if automatic_reports:
@@ -979,7 +1123,7 @@ Sois conservateur : ne propose des changements que si vraiment nécessaire."""
                     self.logger.info(f"Jalon {self.current_milestone_id} terminé avec succès - Pas d'évaluation nécessaire")
             
         except Exception as e:
-            self.logger.error(f"Erreur lors de l'évaluation du jalon: {str(e)}")
+            self.logger.error(f"❌ Erreur lors de l'évaluation du jalon: {str(e)}")
     
     def _trigger_plan_evaluation_with_context(self, automatic_report: Dict[str, Any], manual_reports: List[Dict[str, Any]]) -> None:
         """Déclenche l'évaluation du plan avec le contexte complet."""
@@ -1020,7 +1164,7 @@ Sois conservateur : ne propose des changements que si vraiment nécessaire."""
 **Résumé des réalisations**:
 {content}
 
-**État du projet**: {self.project_state['milestones_completed']}/{len(self.milestones)} jalons terminés
+**État du projet**: {self.project_state['milestones_completed']}/{len(self._milestone_manager.milestones)} jalons terminés
 
 ---
 """
@@ -1033,23 +1177,22 @@ Sois conservateur : ne propose des changements que si vraiment nécessaire."""
 **Contenu**: {content[:200]}{'...' if len(content) > 200 else ''}
 
 **Analyse**: Plan évalué comme {details.get('status', 'stable')}
-**État du projet**: {self.project_state['milestones_completed']}/{len(self.milestones)} jalons terminés
+**État du projet**: {self.project_state['milestones_completed']}/{len(self._milestone_manager.milestones)} jalons terminés
 
 ---
 """
             
             elif entry_type == "milestone_partially_completed":
                 milestone_name = details.get('milestone_name', 'Unknown')
-                attempts = details.get('correction_attempts', 0)
                 entry = f"""
 ## {timestamp} - Jalon Partiellement Complété: {milestone_name}
 
-**Résultat**: ⚠️ Jalon complété partiellement après {attempts} tentatives de correction
+**Résultat**: ⚠️ Jalon complété partiellement (limite de corrections atteinte)
 **Raison**: {content}
 **Statut**: Fonctionnel mais incomplet
 
 **Impact**: Le projet continue mais ce jalon pourrait nécessiter une attention future
-**État du projet**: {self.project_state['milestones_completed']}/{len(self.milestones)} jalons terminés
+**État du projet**: {self.project_state['milestones_completed']}/{len(self._milestone_manager.milestones)} jalons terminés
 
 ---
 """
@@ -1060,7 +1203,7 @@ Sois conservateur : ne propose des changements que si vraiment nécessaire."""
 
 {content}
 
-**État du projet**: {self.project_state['milestones_completed']}/{len(self.milestones)} jalons terminés
+**État du projet**: {self.project_state['milestones_completed']}/{len(self._milestone_manager.milestones)} jalons terminés
 
 ---
 """
@@ -1097,6 +1240,197 @@ Sois conservateur : ne propose des changements que si vraiment nécessaire."""
                 
         except Exception as e:
             self.logger.error(f"Erreur lors de la création d'entrée de journal: {str(e)}")
+    
+    def _request_human_validation(self, reason: str, recommended_action: str, 
+                                  milestone_details: Dict[str, Any] = None,
+                                  agent_reports: List[Dict[str, Any]] = None,
+                                  verification_info: Dict[str, Any] = None) -> Dict[str, Any]:
+        """
+        Demande une validation humaine avant une décision critique.
+        
+        Args:
+            reason: Raison de la demande de validation
+            recommended_action: Action recommandée par l'IA
+            milestone_details: Détails complets du jalon (optionnel)
+            agent_reports: Rapports des agents pour ce jalon (optionnel)
+            verification_info: Information de vérification complète (optionnel)
+            
+        Returns:
+            Dict avec 'action' (approve_recommendation/force_approve/adjust_plan) et 'instruction' si nécessaire
+        """
+        try:
+            # Utiliser l'IA pour formuler une question claire
+            question_prompt = f"""Tu es le superviseur d'un projet. Tu dois demander l'avis de l'utilisateur humain.
+
+Situation: {reason}
+Action recommandée par l'IA: {recommended_action}
+
+Formule UNE SEULE question claire et directe pour demander à l'utilisateur ce qu'il souhaite.
+La question doit être professionnelle, concise et expliquer clairement la situation.
+Termines ta question par les 3 choix suivants :
+1. Approuver l'action recommandée
+2. Valider le jalon et continuer (ignorer la recommandation)
+3. Donner une instruction pour ajuster le plan
+
+"""
+
+            formatted_question = self.generate_with_context(
+                prompt=question_prompt,
+                temperature=0.3
+            )
+            
+            # Interface utilisateur enrichie
+            cli = CLIInterface()
+            cli.display_warning(f"🛑 INTERVENTION HUMAINE REQUISE")
+            
+            # Affichage enrichi si les détails sont disponibles
+            if milestone_details and agent_reports is not None and verification_info:
+                # Informations de base du jalon
+                milestone_name = milestone_details.get('name', 'Non spécifié')
+                agents = milestone_details.get('agents_required', [])
+                deliverables = milestone_details.get('deliverables', [])
+                total_corrections = self.project_state['total_corrections']
+                max_global_corrections = self.max_global_corrections
+                
+                cli.console.print(f"\n📊 [bold cyan]DÉTAILS DU JALON:[/bold cyan]")
+                cli.console.print(f"• Nom: {milestone_name}")
+                cli.console.print(f"• Agents: {agents}")
+                cli.console.print(f"• Corrections globales: {total_corrections}/{max_global_corrections}")
+                
+                cli.console.print(f"\n📋 [bold cyan]LIVRABLES ATTENDUS:[/bold cyan]")
+                for deliverable in deliverables:
+                    cli.console.print(f"• {deliverable}")
+                
+                # Auto-évaluations détaillées des agents
+                cli.console.print(f"\n❌ [bold cyan]AUTO-ÉVALUATIONS AGENTS:[/bold cyan]")
+                automatic_reports = [r for r in agent_reports if r.get('content', {}).get('type') == 'automatic']
+                
+                if automatic_reports:
+                    for report in automatic_reports:
+                        content = report.get('content', {})
+                        agent_name = content.get('agent_name', 'Unknown')
+                        assessment = content.get('self_assessment', 'unknown')
+                        confidence_level = content.get('confidence_level', 0)
+                        artifacts = len(content.get('artifacts_created', []))
+                        issues = content.get('issues_encountered', [])
+                        deliverables_status = content.get('deliverables_status', {})
+                        
+                        cli.console.print(f"• {agent_name}: \"{assessment}\" (confiance: {confidence_level:.0%})")
+                        cli.console.print(f"  - Artefacts créés: {artifacts}")
+                        
+                        if issues:
+                            # Afficher max 2 premiers problèmes pour éviter verbosité excessive
+                            issues_display = issues[:2]
+                            issues_text = ', '.join(issues_display)
+                            if len(issues) > 2:
+                                issues_text += f" (+{len(issues)-2} autres)"
+                            cli.console.print(f"  - Problèmes: {issues_text}")
+                        
+                        missing_deliverables = [d for d, s in deliverables_status.items() if s == 'missing']
+                        if missing_deliverables:
+                            missing_display = missing_deliverables[:2]  # Max 2 pour lisibilité
+                            missing_text = ', '.join(missing_display)
+                            if len(missing_deliverables) > 2:
+                                missing_text += f" (+{len(missing_deliverables)-2} autres)"
+                            cli.console.print(f"  - Livrables manqués: {missing_text}")
+                else:
+                    cli.console.print("• Aucune auto-évaluation disponible")
+                
+                # Diagnostic complet du superviseur
+                cli.console.print(f"\n🔍 [bold cyan]DIAGNOSTIC SUPERVISEUR:[/bold cyan]")
+                diagnostic = verification_info.get('reason', 'Non spécifié')
+                confidence = verification_info.get('confidence', 0.0)
+                cli.console.print(f"{diagnostic}")
+                cli.console.print(f"(Confiance: {confidence:.0%})")
+                
+                cli.console.print(f"\n⚖️ [bold yellow] ACTION RECOMMANDÉE:[/bold yellow]")
+                cli.console.print(f"{recommended_action}")
+            else:
+                # Affichage simple si pas de détails (compatibilité)
+                cli.console.print(f"\n[bold cyan]Situation:[/bold cyan] {reason}")
+                cli.console.print(f"[bold yellow]Action recommandée:[/bold yellow] {recommended_action}")
+            
+            cli.console.print(f"\n[bold white]{formatted_question}[/bold white]\n")
+            
+            # Choix utilisateur
+            choices = [
+                "1. Approuver l'action recommandée",
+                "2. Valider le jalon et continuer", 
+                "3. Donner instruction pour ajuster le plan"
+            ]
+            
+            choice = Prompt.ask(
+                "[bold cyan]Votre choix[/bold cyan]",
+                choices=["1", "2", "3"],
+                default="1"
+            )
+            
+            # Parser la réponse
+            if choice == "1":
+                cli.display_info("✅ Action recommandée approuvée par l'utilisateur")
+                return {"action": "approve_recommendation", "instruction": ""}
+            
+            elif choice == "2":
+                cli.display_info("☑️ Validation forcée du jalon demandée")
+                return {"action": "force_approve", "instruction": "Validation forcée par l'utilisateur"}
+            
+            elif choice == "3":
+                plan_instruction = Prompt.ask(
+                    "[bold cyan]Quelle instruction pour ajuster le plan ?[/bold cyan]"
+                )
+                cli.display_info(f"🔄 Instruction pour ajustement de plan reçue: {plan_instruction}")
+                
+                # Analyser l'instruction avec LLM
+                analyzed_reason = self._analyze_user_instruction_for_plan_adjustment(plan_instruction)
+                
+                return {
+                    "action": "adjust_plan",
+                    "instruction": plan_instruction,
+                    "analyzed_reason": analyzed_reason
+                }
+            
+            # Fallback
+            return {"action": "approve_recommendation", "instruction": ""}
+            
+        except Exception as e:
+            self.logger.error(f"Erreur lors de la demande de validation humaine: {e}")
+            # En cas d'erreur, approuver par défaut pour continuer
+            return {"action": "approve_recommendation", "instruction": f"Erreur validation humaine: {e}"}
+    
+    def _analyze_user_instruction_for_plan_adjustment(self, instruction: str) -> str:
+        """
+        Analyse l'instruction utilisateur pour ajustement de plan avec LLM.
+        
+        Args:
+            instruction: Instruction libre de l'utilisateur
+            
+        Returns:
+            Raison analysée et structurée pour adjust_plan()
+        """
+        try:
+            prompt = f"""Tu es un superviseur de projet. Analyse cette instruction utilisateur et reformule-la comme une raison technique claire pour ajuster le plan de projet.
+
+Instruction utilisateur: "{instruction}"
+
+Transforme cette instruction en une description technique précise de:
+1. Pourquoi le plan doit être ajusté
+2. Quels changements sont nécessaires
+3. Quel impact sur les jalons futurs
+
+Réponds en 1-2 phrases claires et professionnelles."""
+
+            analyzed_reason = self.generate_with_context(
+                prompt=prompt,
+                temperature=0.3
+            )
+            
+            self.logger.info(f"Instruction utilisateur analysée: {instruction} → {analyzed_reason}")
+            return analyzed_reason
+            
+        except Exception as e:
+            self.logger.error(f"Erreur lors de l'analyse d'instruction: {e}")
+            # Fallback: utiliser l'instruction originale
+            return f"Ajustement demandé par l'utilisateur: {instruction}"
     
     def _generate_milestone_summary(self, milestone_result: Dict[str, Any]) -> str:
         """Génère un résumé intelligent d'un jalon terminé."""
@@ -1158,7 +1492,7 @@ Maximum 200 mots, style professionnel."""
             if charter_path.exists():
                 charter = charter_path.read_text(encoding='utf-8')
                 if charter and len(charter) > 50:
-                    self.logger.info(f"Project Charter récupéré depuis le fichier: {charter_path}")
+                    self.logger.debug(f"Project Charter inséré depuis le fichier: {charter_path}")
                     return charter
                 else:
                     raise ValueError("Project Charter fichier vide ou trop court")
@@ -1261,28 +1595,81 @@ RAPPORTS D'AUTO-ÉVALUATION:
                     evaluation_context += f"  Problèmes: {'; '.join(report['issues_encountered'])}\n"
             
             # Prompt d'évaluation intelligente
-            evaluation_prompt = f"""Tu es le superviseur du projet. Évalue si ce jalon respecte les objectifs du Project Charter.
+            evaluation_prompt = f"""Tu es le superviseur du projet. Évalue si ce jalon atteint un niveau de qualité suffisant (≥90%) selon le Project Charter.
 
 {evaluation_context}
 
-Analyse:
-1. Les livrables attendus sont-ils créés selon le Charter?
-2. Y a-t-il des déviations par rapport aux objectifs?
-3. Les problèmes rencontrés compromettent-ils la suite?
+CRITÈRES D'ÉVALUATION STRICTS:
+1. **Taux de réussite par agent**: Un agent avec self_assessment="failed" + 0 artefacts = 0% de réussite
+2. **Seuil minimal**: Le jalon nécessite ≥90% de réussite globale pour être approuvé
+
+Analyse OBLIGATOIRE:
+  - Calcule le taux de réussite réel du jalon
+  - Un agent "failed" sans artefacts compromet gravement la qualité
+  - Même si d'autres agents compensent, chaque rôle doit remplir sa mission sauf si il est évident que la tache problématique était inutile.
+
+  DÉCISIONS:
+  - "approve": SEULEMENT si ≥90% de réussite ET tous les rôles critiques remplis
+  - "request_rework": Si <90% de réussite OU rôles critiques manquants
+  - "adjust_plan": Si problème structurel nécessitant changement de plan
+  
+
+
 
 Réponds avec un JSON:
-{{
-    "decision": "approve|request_rework|adjust_plan",
-    "reason": "explication détaillée",
-    "confidence": 0.0-1.0,
-    "recommended_action": "action spécifique si nécessaire"
-}}"""
+  {{
+      "decision": "approve|request_rework|adjust_plan",
+      "success_rate": XX %,
+      "reason": "calcul détaillé du taux de réussite et justification",
+      "confidence": 0.0-1.0,
+      "agents_analysis": {{"agent1": "success/failure + justification", "agent2": "..."}}
+  }}"""
             
             # Génération de l'évaluation
             evaluation_response = self.generate_json_with_context(
                 prompt=evaluation_prompt,
                 temperature=0.4
             )
+            
+            # Vérifier si le parsing JSON a échoué
+            if evaluation_response.get('parsing_failed', False):
+                self.logger.error(f"Échec parsing JSON lors de l'évaluation du jalon {milestone['name']}")
+                
+                # Utiliser le système d'escalation existant
+                user_decision = self._request_human_validation(
+                    reason=f"Impossible d'évaluer automatiquement le jalon '{milestone['name']}' à cause d'un échec de parsing JSON de la réponse IA",
+                    recommended_action="Examiner manuellement les rapports d'agents et décider",
+                    milestone_details=milestone,
+                    agent_reports=structured_reports,
+                    verification_info={
+                        'error': 'JSON parsing failed',
+                        'raw_response': evaluation_response.get('raw_response', 'Non disponible')[:500],
+                        'reason': 'Échec parsing JSON de l\'évaluation IA'
+                    }
+                )
+                
+                if user_decision["action"] == "approve_recommendation":
+                    # L'utilisateur veut examiner manuellement
+                    return {
+                        'decision': 'request_rework',
+                        'reason': 'Décision manuelle suite à échec parsing JSON',
+                        'confidence': 0.1,
+                        'evaluation_type': 'human_escalation_json_error'
+                    }
+                elif user_decision["action"] == "force_approve":
+                    return {
+                        'decision': 'approve',
+                        'reason': 'Approbation forcée suite à échec parsing JSON',
+                        'confidence': 0.3,
+                        'evaluation_type': 'human_forced_json_error'
+                    }
+                else:
+                    return {
+                        'decision': 'adjust_plan',
+                        'reason': user_decision.get('instruction', 'Ajustement demandé suite à échec parsing JSON'),
+                        'confidence': 0.2,
+                        'evaluation_type': 'human_adjust_json_error'
+                    }
             
             # Validation et enrichissement de la réponse
             decision = evaluation_response.get('decision', 'approve')
@@ -1325,14 +1712,18 @@ Réponds avec un JSON:
         current_milestone['verification_confidence'] = confidence
         
         # Gestion des tentatives de correction pour éviter boucles infinites
-        correction_count = current_milestone.get('correction_attempts', 0)
-        max_corrections = self.max_corrections
+        total_corrections = self.project_state['total_corrections']
+        max_global_corrections = self.max_global_corrections
         
         if decision == 'approve':
             # Jalon approuvé - continuer normalement
-            self.logger.info(f"Jalon '{current_milestone['name']}' approuvé (confiance: {confidence:.2f})")
+            self.logger.info(f"☑️  Jalon '{current_milestone['name']}' approuvé (confiance: {confidence:.2f})")
             
-            # Journalisation de l'approbation
+            # Avancer au jalon suivant via le manager ET incrémenter AVANT journalisation
+            self._milestone_manager.complete_current_and_advance('completed')
+            self.project_state['milestones_completed'] += 1
+            
+            # Journalisation de l'approbation (APRÈS incrémentation pour compteur correct)
             self._create_journal_entry(
                 'milestone_approved',
                 reason,
@@ -1343,81 +1734,129 @@ Réponds avec un JSON:
                 }
             )
             
-            # Avancer au jalon suivant
-            self.current_milestone_index += 1
-            self.project_state['milestones_completed'] += 1
-            current_milestone['status'] = 'completed'
-            
-        elif decision == 'request_rework' and correction_count < max_corrections:
-            # Vérifier le nombre de corrections imbriquées pour éviter les boucles infinies
-            supervisor_config = default_config.get('agents', {}).get('supervisor', {})
-            max_nested_corrections = supervisor_config.get('max_nested_corrections', 2)
-            correction_depth = current_milestone['name'].count('Correction:')
-            if correction_depth >= max_nested_corrections:
-                self.logger.error(f"Trop de corrections imbriquées ({correction_depth}), approbation forcée pour éviter boucle infinie")
-                self._force_milestone_approval(current_milestone, "Limite de corrections imbriquées atteinte")
-                return
-            
-            # Demande de correction
-            self.logger.warning(f"Correction requise pour '{current_milestone['name']}' (tentative {correction_count + 1}/{max_corrections})")
-            
-            # Incrémenter le compteur de corrections
-            current_milestone['correction_attempts'] = correction_count + 1
-            
-            # Ajouter un jalon de correction via l'outil existant
-            correction_result = self.tools['add_milestone']({
-                'after_milestone_id': current_milestone['id'],
-                'name': f"Correction: {current_milestone['name']}",
-                'description': f"Action corrective requise: {reason}",
-                'agents_required': current_milestone['agents_required'],
-                'deliverables': ["Rapport de correction", "Artifacts corrigés"]
-            })
-            
-            if correction_result.status == 'success':
-                self.logger.info("Jalon de correction ajouté avec succès")
-                # NE PAS incrémenter current_milestone_index - le prochain jalon sera la correction
+        elif decision == 'request_rework':
+            if total_corrections < max_global_corrections:
+                # Escalade utilisateur avant rework
+                self.logger.info(f"Rework requis pour '{current_milestone['name']}' - Demande de validation humaine")
+                
+                user_decision = self._request_human_validation(
+                    reason=f"Le jalon '{current_milestone['name']}' nécessite une correction : {reason}",
+                    recommended_action="Créer un jalon de correction",
+                    milestone_details=current_milestone,
+                    agent_reports=self.current_milestone_reports,
+                    verification_info=verification
+                )
+                
+                if user_decision["action"] == "approve_recommendation":
+                    # Incrémenter le compteur global
+                    self.project_state['total_corrections'] += 1
+                    
+                    # Demande de correction approuvée
+                    self.logger.warning(f"Correction approuvée pour '{current_milestone['name']}' (correction globale {self.project_state['total_corrections']}/{max_global_corrections})")
+                    
+                    # Ajouter un jalon de correction via le manager - ZERO FAILURE
+                    correction = self._milestone_manager.insert_correction_after_current(
+                        name=f"Correction: {current_milestone['name']}",
+                        description=f"Action corrective requise: {reason}",
+                        agents_required=current_milestone['agents_required'],
+                        deliverables=["Rapport de correction", "Artifacts corrigés"]
+                    )
+                    
+                    self.logger.info(f"Jalon de correction {correction['id']} ajouté après jalon courant")
+                    
+                    # Avancer l'index vers la correction pour que l'orchestrateur l'exécute
+                    self._milestone_manager.current_index += 1
+                    
+                elif user_decision["action"] == "force_approve":
+                    # Forcer l'approbation du jalon actuel
+                    self.logger.info(f"Approbation forcée du jalon '{current_milestone['name']}' par l'utilisateur")
+                    self._force_milestone_approval(current_milestone, user_decision["instruction"])
+                    
+                elif user_decision["action"] == "adjust_plan":
+                    # Incrémenter le compteur global
+                    self.project_state['total_corrections'] += 1
+                    
+                    # Ajustement de plan demandé par l'utilisateur
+                    self.logger.info(f"Ajustement de plan demandé par l'utilisateur : {user_decision['instruction']}")
+                    
+                    # Finaliser le jalon actuel d'abord
+                    self._milestone_manager.complete_current_and_advance('completed')
+                    self.project_state['milestones_completed'] += 1
+                    
+                    # Utiliser la raison analysée pour ajuster le plan
+                    analyzed_reason = user_decision.get('analyzed_reason', user_decision['instruction'])
+                    self.adjust_plan(analyzed_reason)
             else:
-                self.logger.error(f"Échec ajout jalon correction: {correction_result.error}")
-                # Forcer l'approbation en cas d'échec
-                self._force_milestone_approval(current_milestone, "Échec ajout correction")
-            
-        elif decision == 'request_rework' and correction_count >= max_corrections:
-            # Trop de tentatives de correction - stratégie d'échec gracieuse
-            self.logger.error(f"Trop de tentatives de correction ({correction_count}), passage en mode partiellement complété")
-            self._mark_milestone_partially_completed(current_milestone, f"Limite de corrections atteinte ({max_corrections}) - Jalon partiellement fonctionnel")
+                # Limite globale atteinte - approbation forcée avec message explicatif
+                self.logger.warning(f"Nombre maximum de corrections possibles atteint ({total_corrections}/{max_global_corrections}) - Validation automatique")
+                self._force_milestone_approval(current_milestone, f"Limite globale de corrections atteinte ({max_global_corrections})")
             
         elif decision == 'adjust_plan':
-            # SÉQUENCE CORRIGÉE POUR ÉVITER DE SAUTER DES JALONS
-            self.logger.info(f"Ajustement du plan requis suite au jalon '{current_milestone['name']}'")
-            
-            # ÉTAPE 1: Finaliser le jalon déclencheur AVANT adjust_plan
-            # Ceci évite le conflit d'index avec _force_milestone_approval
-            current_milestone['status'] = 'completed'
-            current_milestone['triggered_plan_adjustment'] = True
-            current_milestone['adjustment_reason'] = reason
-            
-            # Avancer l'index et incrémenter le compteur
-            self.current_milestone_index += 1
-            self.project_state['milestones_completed'] += 1
-            
-            # Journaliser la finalisation du jalon déclencheur
-            self._create_journal_entry(
-                'milestone_completed_trigger_adjustment',
-                f"Jalon '{current_milestone['name']}' complété et déclenche l'ajustement: {reason}",
-                {
-                    'milestone_name': current_milestone['name'],
-                    'trigger_reason': reason,
-                    'milestones_completed': self.project_state['milestones_completed']
-                }
-            )
-            
-            # ÉTAPE 2: Maintenant ajuster le plan 
-            # adjust_plan va recalculer current_milestone_index = len(completed_milestones)
-            # ce qui le repositionne correctement sur le premier nouveau jalon
-            self.adjust_plan(reason)
-            
-            # Note: Pas besoin de _force_milestone_approval - nous avons géré manuellement
-            # L'atomicité de l'opération est garantie
+            if total_corrections < max_global_corrections:
+                # Escalade utilisateur avant ajustement du plan
+                self.logger.info(f"Ajustement du plan requis suite au jalon '{current_milestone['name']}' - Demande de validation humaine")
+                
+                user_decision = self._request_human_validation(
+                    reason=f"Le jalon '{current_milestone['name']}' indique que le plan doit être ajusté : {reason}",
+                    recommended_action="Recalculer et ajuster le plan du projet",
+                    milestone_details=current_milestone,
+                    agent_reports=self.current_milestone_reports,
+                    verification_info=verification
+                )
+                
+                if user_decision["action"] == "approve_recommendation":
+                    # Incrémenter le compteur global
+                    self.project_state['total_corrections'] += 1
+                    
+                    # Exécuter l'ajustement du plan comme prévu
+                    self.logger.info(f"Utilisateur approuve l'ajustement du plan (correction globale {self.project_state['total_corrections']}/{max_global_corrections})")
+                    
+                    # Finaliser le jalon déclencheur AVANT adjust_plan
+                    current_milestone['status'] = 'completed'
+                    current_milestone['triggered_plan_adjustment'] = True
+                    current_milestone['adjustment_reason'] = reason
+                    
+                    # Avancer via le manager
+                    self._milestone_manager.complete_current_and_advance('completed')
+                    self.project_state['milestones_completed'] += 1
+                    
+                    # Journaliser la finalisation du jalon déclencheur
+                    self._create_journal_entry(
+                        'milestone_completed_trigger_adjustment',
+                        f"Jalon '{current_milestone['name']}' complété et déclenche l'ajustement: {reason}",
+                        {
+                            'milestone_name': current_milestone['name'],
+                            'trigger_reason': reason,
+                            'milestones_completed': self.project_state['milestones_completed']
+                        }
+                    )
+                    
+                    # Ajuster le plan 
+                    self.adjust_plan(reason)
+                
+                elif user_decision["action"] == "force_approve":
+                    # Forcer l'approbation du jalon actuel au lieu d'ajuster le plan
+                    self.logger.info(f"Approbation forcée du jalon '{current_milestone['name']}' par l'utilisateur (au lieu d'ajuster le plan)")
+                    self._force_milestone_approval(current_milestone, user_decision["instruction"])
+                    
+                elif user_decision["action"] == "adjust_plan":
+                    # Incrémenter le compteur global
+                    self.project_state['total_corrections'] += 1
+                    
+                    # Ajustement de plan avec instruction spécifique
+                    self.logger.info(f"Ajustement de plan avec instruction spécifique : {user_decision['instruction']}")
+                    
+                    # Finaliser le jalon actuel d'abord
+                    self._milestone_manager.complete_current_and_advance('completed')
+                    self.project_state['milestones_completed'] += 1
+                    
+                    # Utiliser la raison analysée pour ajuster le plan
+                    analyzed_reason = user_decision.get('analyzed_reason', user_decision['instruction'])
+                    self.adjust_plan(analyzed_reason)
+            else:
+                # Limite globale atteinte - approbation forcée avec message explicatif
+                self.logger.warning(f"Nombre maximum de corrections possibles atteint ({total_corrections}/{max_global_corrections}) - Validation automatique du plan actuel")
+                self._force_milestone_approval(current_milestone, f"Limite globale de corrections atteinte ({max_global_corrections})")
             
         else:
             # Cas non géré - approuver par défaut
@@ -1437,12 +1876,11 @@ Réponds avec un JSON:
             {'milestone_name': milestone['name']}
         )
         
-        # Marquer comme complété et avancer
-        milestone['status'] = 'completed'
+        # Marquer les métadonnées et avancer via le manager
         milestone['forced_approval'] = True
         milestone['forced_approval_reason'] = reason
         
-        self.current_milestone_index += 1
+        self._milestone_manager.complete_current_and_advance('completed')
         self.project_state['milestones_completed'] += 1
     
     def _mark_milestone_partially_completed(self, milestone: Dict[str, Any], reason: str) -> None:
@@ -1458,17 +1896,16 @@ Réponds avec un JSON:
             reason,
             {
                 'milestone_name': milestone['name'],
-                'correction_attempts': milestone.get('correction_attempts', 0),
+                'total_corrections_used': self.project_state['total_corrections'],
                 'status': 'partial'
             }
         )
         
-        # Marquer comme partiellement complété et avancer
-        milestone['status'] = 'partially_completed'
+        # Marquer les métadonnées et avancer via le manager
         milestone['partial_completion_reason'] = reason
         milestone['completion_level'] = 'partial'
         
-        self.current_milestone_index += 1
+        self._milestone_manager.complete_current_and_advance('partially_completed')
         self.project_state['milestones_completed'] += 1
         
         # Créer une note pour les jalons suivants
@@ -1501,7 +1938,7 @@ Réponds avec un JSON:
             
             # 1. Sauvegarder les jalons complétés/partiels avec toutes leurs métadonnées
             completed_milestones = []
-            for m in self.milestones:
+            for m in self._milestone_manager.milestones:
                 if m.get('status') in ['completed', 'partially_completed']:
                     completed_milestones.append(m.copy())  # Préserver toutes les métadonnées
             
@@ -1565,8 +2002,8 @@ Réponds uniquement avec un JSON contenant la nouvelle liste des jalons futurs:
             # Cas limite : 0 nouveaux jalons = projet se termine naturellement
             if not new_milestones_raw:
                 self.logger.info("Aucun nouveau jalon généré - projet se termine")
-                self.milestones = completed_milestones
-                self.current_milestone_index = len(completed_milestones)  # Index au-delà du dernier
+                # Utiliser le manager immutable - pas de nouveaux jalons futurs
+                self._milestone_manager.replace_future_milestones([])
                 self._create_journal_entry(
                     'plan_adjustment_no_new_milestones',
                     f"Plan ajusté sans nouveaux jalons: {reason}. Projet se termine.",
@@ -1574,38 +2011,26 @@ Réponds uniquement avec un JSON contenant la nouvelle liste des jalons futurs:
                 )
                 return
             
-            # Générer IDs séquentiels pour éviter conflits
-            next_id = max([m['id'] for m in completed_milestones], default=0) + 1
-            new_milestones = []
-            
-            for i, m in enumerate(new_milestones_raw):
+            # Utiliser le système immutable pour remplacer les jalons futurs
+            validated_milestones = []
+            for m in new_milestones_raw:
                 validated_milestone = {
-                    'id': next_id + i,
-                    'milestone_id': f'milestone_{next_id + i}',
-                    'name': m.get('name', f'Jalon {next_id + i}'),
+                    'name': m.get('name', f'Jalon généré'),
                     'description': m.get('description', ''),
                     'agents_required': [a for a in m.get('agents_required', ['analyst']) 
                                       if a in ['analyst', 'developer']],
                     'deliverables': m.get('deliverables', []),
                     'estimated_duration': m.get('estimated_duration', 'À estimer'),
-                    'dependencies': m.get('dependencies', []),
-                    'status': 'pending'
+                    'dependencies': m.get('dependencies', [])
                 }
+                validated_milestones.append(validated_milestone)
                 
-                # Validation supplémentaire
-                if not validated_milestone['agents_required']:
-                    validated_milestone['agents_required'] = ['analyst']
-                
-                new_milestones.append(validated_milestone)
+            # Remplacer les jalons futurs via le manager unifié
+            self._milestone_manager.replace_future_milestones(validated_milestones)
+            new_milestones = self._milestone_manager.milestones[len(completed_milestones):]
             
-            # 5. Reconstruction complète de la liste des jalons
-            self.milestones = completed_milestones + new_milestones
-            
-            # 6. **CRITIQUE**: Recalcul de l'index courant basé sur les jalons complétés
-            # L'index doit pointer sur le premier nouveau jalon
-            self.current_milestone_index = len(completed_milestones)
-            
-            self.logger.info(f"Index recalculé: {self.current_milestone_index} (premier nouveau jalon)")
+            # 6. **CRITIQUE**: Index géré automatiquement par replace_future_milestones
+            self.logger.info(f"Index repositionné automatiquement sur premier nouveau jalon")
             
             # 7. Journalisation complète avec métriques détaillées
             self._create_journal_entry(
@@ -1615,8 +2040,8 @@ Réponds uniquement avec un JSON contenant la nouvelle liste des jalons futurs:
                     'trigger_reason': reason,
                     'completed_milestones_count': len(completed_milestones),
                     'new_milestones_count': len(new_milestones),
-                    'total_milestones': len(self.milestones),
-                    'current_index': self.current_milestone_index,
+                    'total_milestones': len(self._milestone_manager.milestones),
+                    'current_index': self._milestone_manager.current_index,
                     'completed_milestones': completed_names,
                     'new_milestones': [m['name'] for m in new_milestones]
                 }
@@ -1625,7 +2050,7 @@ Réponds uniquement avec un JSON contenant la nouvelle liste des jalons futurs:
             # 8. Mise à jour RAG avec contexte enrichi
             self._update_plan_in_rag(f"Plan ajusté ({reason}): {len(new_milestones)} nouveaux jalons")
             
-            self.logger.info(f"adjust_plan terminé avec succès: {len(new_milestones)} nouveaux jalons, index={self.current_milestone_index}")
+            self.logger.info(f"adjust_plan terminé avec succès: {len(new_milestones)} nouveaux jalons, index={self._milestone_manager.current_index}")
             
         except Exception as e:
             self.logger.error(f"ERREUR CRITIQUE adjust_plan: {e}", exc_info=True)
@@ -1635,3 +2060,4 @@ Réponds uniquement avec un JSON contenant la nouvelle liste des jalons futurs:
                 f"Erreur critique lors de l'ajustement: {e}. Plan conservé pour éviter corruption.",
                 {'trigger_reason': reason, 'critical_error': str(e)}
             )
+    

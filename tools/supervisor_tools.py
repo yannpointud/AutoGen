@@ -22,7 +22,7 @@ def tool_assign_agents_to_milestone(agent, parameters: Dict[str, Any]):
         
         # Trouver le jalon
         milestone = None
-        for m in agent.milestones:
+        for m in agent._milestone_manager.milestones:
             if str(m.get('id')) == str(milestone_id) or m.get('milestone_id') == milestone_id:
                 milestone = m
                 break
@@ -50,11 +50,11 @@ def tool_get_progress_report(agent, parameters: Dict[str, Any]):
         include_details = parameters.get('include_details', 'false').lower() == 'true'
         
         completed = agent.project_state['milestones_completed']
-        total = len(agent.milestones)
+        total = len(agent._milestone_manager.milestones)
         
         # Calculer la progression réelle en tenant compte des jalons partiels
-        fully_completed = len([m for m in agent.milestones if m.get('status') == 'completed'])
-        partially_completed = len([m for m in agent.milestones if m.get('status') == 'partially_completed'])
+        fully_completed = len([m for m in agent._milestone_manager.milestones if m.get('status') == 'completed'])
+        partially_completed = len([m for m in agent._milestone_manager.milestones if m.get('status') == 'partially_completed'])
         
         # Les jalons partiels comptent pour 0.7 de la progression
         effective_completion = fully_completed + (partially_completed * 0.7)
@@ -66,15 +66,15 @@ def tool_get_progress_report(agent, parameters: Dict[str, Any]):
             'completed_milestones': fully_completed,
             'partially_completed_milestones': partially_completed,
             'total_milestones': total,
-            'current_milestone': agent.milestones[agent.current_milestone_index]['name'] 
-                               if agent.current_milestone_index < total else 'Terminé',
+            'current_milestone': agent._milestone_manager.get_current_milestone()['name'] 
+                               if agent._milestone_manager.get_current_milestone() else 'Terminé',
             'started_at': agent.project_state['started_at'],
             'phase': agent.project_state['current_phase']
         }
         
         if include_details:
             report['milestones'] = []
-            for m in agent.milestones:
+            for m in agent._milestone_manager.milestones:
                 milestone_details = {
                     'id': m['id'],
                     'name': m['name'],
@@ -90,11 +90,11 @@ def tool_get_progress_report(agent, parameters: Dict[str, Any]):
                 
                 report['milestones'].append(milestone_details)
         
-        # Sauvegarder le rapport
+        # Sauvegarder le rapport (interne - pas un livrable)
         report_path = Path("projects") / agent.project_name / "progress_report.json"
         report_path.write_text(json.dumps(report, indent=2), encoding='utf-8')
         
-        return ToolResult('success', result=report, artifact=str(report_path))
+        return ToolResult('success', result=report)
         
     except Exception as e:
         return ToolResult('error', error=str(e))
@@ -114,42 +114,39 @@ def tool_add_milestone(agent, parameters: Dict[str, Any]):
         if not name or not description:
             return ToolResult('error', error="Nom et description requis")
         
-        # Générer un nouvel ID
-        new_id = max([m['id'] for m in agent.milestones], default=0) + 1
-        
-        # Créer le nouveau jalon
-        new_milestone = {
-            'id': new_id,
-            'milestone_id': f'milestone_{new_id}',
-            'name': name,
-            'description': description,
-            'agents_required': [a for a in agents_required if a in ['analyst', 'developer']],
-            'deliverables': deliverables,
-            'estimated_duration': 'À estimer',
-            'dependencies': [],
-            'status': 'pending'
-        }
-        
-        # Trouver la position d'insertion
+        # Dans le système immutable, on utilise insert_correction ou add_milestone
         if after_id:
-            insert_pos = None
-            for i, m in enumerate(agent.milestones):
-                if str(m['id']) == str(after_id) or m['milestone_id'] == after_id:
-                    insert_pos = i + 1
-                    break
-            if insert_pos is None:
+            # Vérifier que le jalon de référence existe
+            anchor = agent._milestone_manager.find_milestone(after_id)
+            if not anchor:
                 return ToolResult('error', error=f"Jalon {after_id} non trouvé")
-            agent.milestones.insert(insert_pos, new_milestone)
+            
+            # Pour l'instant, utiliser insert_correction comme mécanisme d'insertion
+            new_milestone = agent._milestone_manager.insert_correction_after_current(
+                name=name,
+                description=description,
+                agents_required=[a for a in agents_required if a in ['analyst', 'developer']],
+                deliverables=deliverables,
+                estimated_duration='À estimer',
+                dependencies=[]
+            )
         else:
-            # Ajouter à la fin
-            agent.milestones.append(new_milestone)
+            # Ajouter à la fin via le manager
+            new_milestone = agent._milestone_manager.add_milestone(
+                name=name,
+                description=description,
+                agents_required=[a for a in agents_required if a in ['analyst', 'developer']],
+                deliverables=deliverables,
+                estimated_duration='À estimer',
+                dependencies=[]
+            )
         
         # Mettre à jour dans le RAG
         agent._update_plan_in_rag(f"Nouveau jalon ajouté: {name}")
         
         return ToolResult('success', result={
             'milestone_added': new_milestone,
-            'total_milestones': len(agent.milestones)
+            'total_milestones': len(agent._milestone_manager.milestones)
         })
         
     except Exception as e:
@@ -167,12 +164,8 @@ def tool_modify_milestone(agent, parameters: Dict[str, Any]):
         if not milestone_id:
             return ToolResult('error', error="ID du jalon requis")
         
-        # Trouver le jalon
-        milestone = None
-        for m in agent.milestones:
-            if str(m['id']) == str(milestone_id) or m['milestone_id'] == milestone_id:
-                milestone = m
-                break
+        # Trouver le jalon via le manager
+        milestone = agent._milestone_manager.find_milestone(milestone_id)
         
         if not milestone:
             return ToolResult('error', error=f"Jalon {milestone_id} non trouvé")
@@ -204,44 +197,38 @@ def tool_modify_milestone(agent, parameters: Dict[str, Any]):
 
 
 def tool_remove_milestone(agent, parameters: Dict[str, Any]):
-    """Supprime un jalon (seulement si pas commencé)."""
+    """OBSOLÈTE: Dans le système immutable, les jalons ne sont plus supprimés."""
+    from agents.base_agent import ToolResult
+    
+    return ToolResult('error', error="Suppression de jalons non supportée dans le système immutable. Utilisez des corrections à la place.")
+
+
+def tool_add_correction(agent, parameters: Dict[str, Any]):
+    """Ajoute un jalon de correction après le jalon courant."""
     from agents.base_agent import ToolResult
     
     try:
-        milestone_id = parameters.get('milestone_id', '')
+        name = parameters.get('name', '')
+        description = parameters.get('description', '')
         
-        if not milestone_id:
-            return ToolResult('error', error="ID du jalon requis")
+        if not name or not description:
+            return ToolResult('error', error="Nom et description requis")
         
-        # Trouver le jalon
-        milestone_index = None
-        milestone = None
-        for i, m in enumerate(agent.milestones):
-            if str(m['id']) == str(milestone_id) or m['milestone_id'] == milestone_id:
-                milestone_index = i
-                milestone = m
-                break
-        
-        if milestone is None:
-            return ToolResult('error', error=f"Jalon {milestone_id} non trouvé")
-        
-        # Vérifier si le jalon peut être supprimé
-        if milestone['status'] in ['in_progress', 'completed']:
-            return ToolResult('error', error="Impossible de supprimer un jalon commencé ou terminé")
-        
-        # Supprimer le jalon
-        removed_milestone = agent.milestones.pop(milestone_index)
-        
-        # Ajuster current_milestone_index si nécessaire
-        if milestone_index <= agent.current_milestone_index:
-            agent.current_milestone_index = max(0, agent.current_milestone_index - 1)
+        # Ajouter la correction via le manager immutable
+        correction = agent._milestone_manager.insert_correction_after_current(
+            name=name,
+            description=description,
+            agents_required=parameters.get('agents_required', ['developer']),
+            deliverables=parameters.get('deliverables', ["Rapport de correction"])
+        )
         
         # Mettre à jour dans le RAG
-        agent._update_plan_in_rag(f"Jalon supprimé: {removed_milestone['name']}")
+        agent._update_plan_in_rag(f"Jalon de correction ajouté: {name}")
         
         return ToolResult('success', result={
-            'milestone_removed': removed_milestone,
-            'total_milestones': len(agent.milestones)
+            'correction_added': correction,
+            'inserted_after_current': True,
+            'total_milestones': len(agent._milestone_manager.milestones)
         })
         
     except Exception as e:

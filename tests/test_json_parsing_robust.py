@@ -22,6 +22,8 @@ class MockAgent(BaseAgent):
         # Mock du logger pour éviter les dépendances
         self.logger = Mock()
         self.agent_name = "TestAgent"
+        self.name = "TestAgent"
+        self.project_name = "TestProject"
         self.available_tools = {}
         self.llm_connector = Mock()
         self.state = {}
@@ -434,6 +436,124 @@ Et aussi:
         self.assertEqual(result, [])
         # Vérifier que c'est bien une liste et non None ou autre
         self.assertIsInstance(result, list)
+    
+    def test_fulfills_deliverable_preservation(self):
+        """Test CRITIQUE: Vérifier que fulfills_deliverable est préservé dans toutes les stratégies."""
+        json_with_fulfills = '''```json
+[
+    {
+        "tool": "create_document",
+        "parameters": {
+            "filename": "architecture",
+            "content": "# Architecture du système"
+        },
+        "fulfills_deliverable": ["Documentation", "Architecture"]
+    },
+    {
+        "tool": "implement_code",
+        "parameters": {
+            "filename": "main.py",
+            "language": "python",
+            "code": "def main(): pass"
+        },
+        "fulfills_deliverable": ["Code principal"]
+    }
+]
+```'''
+        
+        result = self.agent._parse_tool_calls(json_with_fulfills)
+        
+        self.assertEqual(len(result), 2)
+        
+        # Vérifier que fulfills_deliverable est préservé pour create_document
+        doc_tool = next((tool for tool in result if tool["tool"] == "create_document"), None)
+        self.assertIsNotNone(doc_tool)
+        self.assertIn("fulfills_deliverable", doc_tool)
+        self.assertEqual(doc_tool["fulfills_deliverable"], ["Documentation", "Architecture"])
+        
+        # Vérifier que fulfills_deliverable est préservé pour implement_code  
+        code_tool = next((tool for tool in result if tool["tool"] == "implement_code"), None)
+        self.assertIsNotNone(code_tool)
+        self.assertIn("fulfills_deliverable", code_tool)
+        self.assertEqual(code_tool["fulfills_deliverable"], ["Code principal"])
+    
+    def test_progressive_parsing_with_incomplete_json(self):
+        """Test stratégie progressive avec JSON incomplet."""
+        # JSON qui pourrait échouer avec la stratégie directe mais être récupéré par la progressive
+        incomplete_json = '''```json
+[
+    {
+        "tool": "create_document",
+        "parameters": {
+            "filename": "specs",
+            "content": "Spécifications très longues..."
+        }
+    },
+    {
+        "tool": "create_project_file",
+        "parameters": {
+            "filename": "config.yaml",
+            "content": "database:\n  host: localhost"
+        }
+    // Missing closing bracket to force progressive parsing
+```'''
+        
+        result = self.agent._parse_tool_calls(incomplete_json)
+        
+        # Doit récupérer au moins un outil
+        self.assertGreaterEqual(len(result), 1)
+        
+        # Vérifier la structure basique des outils récupérés
+        for tool in result:
+            self.assertIn("tool", tool)
+            self.assertIn("parameters", tool)
+    
+    def test_documentation_rescue_with_fulfills_deliverable(self):
+        """Test stratégie documentation rescue avec fulfills_deliverable."""
+        malformed_doc_json = '''```json
+[
+    {
+        "tool": "create_document",
+        "parameters": {
+            "filename": "README",
+            "content": "# Projet important\n\nCette documentation est..."
+        },
+        "fulfills_deliverable": ["Documentation utilisateur", "README.md"]
+    // JSON cassé ici pour forcer la stratégie rescue
+```'''
+        
+        result = self.agent._parse_tool_calls(malformed_doc_json)
+        
+        # Si la stratégie rescue fonctionne, elle devrait préserver fulfills_deliverable
+        if len(result) > 0:
+            doc_tool = result[0]
+            self.assertEqual(doc_tool["tool"], "create_document")
+            # Peut avoir fulfills_deliverable selon la capacité de rescue
+            if "fulfills_deliverable" in doc_tool:
+                self.assertIsInstance(doc_tool["fulfills_deliverable"], list)
+    
+    def test_regex_fallback_with_fulfills_deliverable(self):
+        """Test stratégie regex fallback avec fulfills_deliverable."""
+        broken_json_with_context = '''Completement cassé mais contient:
+        
+        "tool": "create_document"
+        "parameters": {"filename": "test", "content": "contenu"}
+        "fulfills_deliverable": ["Test documentation"]
+        
+        Et aussi:
+        "tool": "implement_code"  
+        "fulfills_deliverable": ["Code de test"]
+        "parameters": {"filename": "test.py", "code": "print('test')"}
+        '''
+        
+        result = self.agent._parse_tool_calls(broken_json_with_context)
+        
+        # La stratégie fallback devrait récupérer quelque chose
+        if len(result) > 0:
+            # Vérifier qu'au moins certains outils ont fulfills_deliverable
+            tools_with_fulfills = [tool for tool in result if "fulfills_deliverable" in tool]
+            # Au moins un outil devrait avoir récupéré son fulfills_deliverable
+            self.assertGreater(len(tools_with_fulfills), 0, "La stratégie fallback devrait récupérer fulfills_deliverable")
 
 
 if __name__ == '__main__':
