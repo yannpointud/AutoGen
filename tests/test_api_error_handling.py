@@ -177,7 +177,7 @@ class TestAPIErrorHandling(unittest.TestCase):
         with self.assertRaises(Exception) as context:
             connector.generate("Test prompt")
         
-        self.assertIn("timed out", str(context.exception).lower())
+        self.assertIn("timeout", str(context.exception).lower())
     
     @patch.dict(os.environ, {'MISTRAL_API_KEY': 'test_key'})
     @patch('core.llm_connector.Mistral')

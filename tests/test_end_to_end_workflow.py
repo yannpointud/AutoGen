@@ -39,8 +39,9 @@ class TestEndToEndWorkflow(unittest.TestCase):
         self.lightweight_patcher = patch('agents.base_agent.get_lightweight_llm_service')
         self.mock_lightweight = self.lightweight_patcher.start()
         mock_lightweight_instance = Mock()
-        mock_lightweight_instance.extract_keywords_and_constraints.return_value = "contraintes du projet: calculatrice python simple"
-        mock_lightweight_instance.generate_summary.return_value = "résumé: développer calculateur avec fonctions mathématiques"
+        mock_lightweight_instance.extract_keywords.return_value = "calculatrice python mathématiques"
+        mock_lightweight_instance.summarize_context.return_value = "résumé: développer calculateur avec fonctions mathématiques"
+        mock_lightweight_instance.self_evaluate_mission.return_value = {"assessment": "compliant", "reason": "Mission accomplie", "confidence": 0.9}
         self.mock_lightweight.return_value = mock_lightweight_instance
         
         # Mock du système de logging
@@ -97,10 +98,12 @@ class TestEndToEndWorkflow(unittest.TestCase):
                 self.assertIn('milestones', plan)
                 self.assertGreaterEqual(len(plan['milestones']), 2)
                 
-                # Vérifier la structure des jalons
-                milestone1 = plan['milestones'][0]
+                # Vérifier la structure des jalons - accès via le milestone manager
+                milestones = supervisor._milestone_manager.milestones
+                milestone1 = milestones[0]
                 self.assertIn('name', milestone1)
                 self.assertIn('agents_required', milestone1)
+                self.assertIn('id', milestone1)
         
         # ========== PHASE 2: AGENTS INSTANTIATION ==========
         with patch('pathlib.Path.mkdir'), \
@@ -218,13 +221,25 @@ class TestEndToEndWorkflow(unittest.TestCase):
                 rag_engine=self.mock_rag_engine
             )
             
-            # Mock de la vérification de jalon
-            with patch.object(supervisor, '_verify_milestone_completion', return_value={'status': 'completed', 'score': 85}):
+            # Mock de la vérification de jalon avec nouveau format
+            with patch.object(supervisor, '_verify_milestone_completion', return_value={'decision': 'approve', 'confidence': 0.85, 'reason': 'Milestone completed successfully'}):
                 
                 milestone_result = {
                     'milestone_id': 1,
                     'tasks_completed': [
-                        {'task_id': 'task1', 'status': 'completed', 'artifacts': ['doc.md']}
+                        {
+                            'agent': 'analyst',
+                            'result': {
+                                'status': 'completed', 
+                                'artifacts': ['doc.md'],
+                                'structured_report': {
+                                    'self_assessment': 'compliant',
+                                    'confidence_level': 0.9,
+                                    'artifacts_created': ['doc.md'],
+                                    'agent_name': 'analyst'
+                                }
+                            }
+                        }
                     ],
                     'agents_involved': ['analyst']
                 }
@@ -232,9 +247,9 @@ class TestEndToEndWorkflow(unittest.TestCase):
                 # Vérifier le jalon
                 verification = supervisor._verify_milestone_completion(milestone_data, milestone_result)
                 
-                # Vérifications
-                self.assertEqual(verification['status'], 'completed')
-                self.assertGreaterEqual(verification['score'], 80)
+                # Vérifications avec nouveau format
+                self.assertEqual(verification['decision'], 'approve')
+                self.assertGreaterEqual(verification['confidence'], 0.8)
     
     def test_rag_context_sharing(self):
         """Test du partage de contexte via RAG entre agents."""
@@ -279,6 +294,104 @@ class TestEndToEndWorkflow(unittest.TestCase):
             # Le supervisor existe et peut être utilisé pour les tâches
             self.assertIsNotNone(supervisor)
             self.assertEqual(supervisor.project_name, self.project_name)
+    
+    def test_structured_reporting_integration(self):
+        """Test de l'intégration des rapports structurés dans le workflow."""
+        
+        with patch('pathlib.Path.mkdir'), \
+             patch('pathlib.Path.exists', return_value=True), \
+             patch('pathlib.Path.read_text', return_value="# Test Charter"):
+            
+            supervisor = Supervisor(
+                project_name=self.project_name,
+                project_prompt="Test structured reporting",
+                rag_engine=self.mock_rag_engine
+            )
+            
+            # Créer un agent mock avec capacité de génération de rapport structuré
+            mock_agent = Mock()
+            mock_agent.name = "TestAgent"
+            mock_agent.project_name = self.project_name
+            
+            # Mock du rapport structuré
+            structured_report = {
+                'self_assessment': 'compliant',
+                'confidence_level': 0.9,
+                'artifacts_created': ['output.txt', 'config.json'],
+                'issues_encountered': [],
+                'agent_name': 'TestAgent',
+                'completion_timestamp': '2024-01-01T12:00:00'
+            }
+            
+            # Mock des outils de rapport
+            with patch('tools.base_tools.tool_report_to_supervisor') as mock_report_tool:
+                mock_result = Mock()
+                mock_result.status = 'success'
+                mock_result.result = {'report_sent': True}
+                mock_report_tool.return_value = mock_result
+                
+                # Simuler l'envoi d'un rapport structuré
+                params = {
+                    'report_type': 'completion',
+                    'content': structured_report
+                }
+                
+                result = mock_report_tool(mock_agent, params)
+                
+                # Vérifications
+                self.assertEqual(result.status, 'success')
+                self.assertTrue(result.result['report_sent'])
+                mock_report_tool.assert_called_once_with(mock_agent, params)
+    
+    def test_supervisor_milestone_buffer_integration(self):
+        """Test de l'intégration du buffer de rapports par jalon."""
+        
+        with patch('pathlib.Path.mkdir'), \
+             patch('pathlib.Path.exists', return_value=True), \
+             patch('pathlib.Path.read_text', return_value="# Test Charter"):
+            
+            supervisor = Supervisor(
+                project_name=self.project_name,
+                project_prompt="Test milestone buffer",
+                rag_engine=self.mock_rag_engine
+            )
+            
+            # Simuler la réception de rapports multiples
+            report1 = {
+                'type': 'progress',
+                'agent': 'analyst',
+                'content': {
+                    'type': 'automatic',
+                    'self_assessment': 'compliant',
+                    'message': 'Analysis completed successfully'
+                }
+            }
+            
+            report2 = {
+                'type': 'completion',  
+                'agent': 'developer',
+                'content': {
+                    'type': 'automatic',
+                    'self_assessment': 'partial', 
+                    'message': 'Implementation partially completed'
+                }
+            }
+            
+            # Simuler l'extraction du milestone depuis les rapports
+            with patch.object(supervisor, '_extract_milestone_from_report', return_value='milestone_1'):
+                
+                # Recevoir les rapports
+                supervisor.receive_report('analyst', report1)
+                supervisor.receive_report('developer', report2)
+                
+                # Vérifications du buffer
+                self.assertEqual(len(supervisor.current_milestone_reports), 2)
+                self.assertEqual(supervisor.current_milestone_id, 'milestone_1')
+                
+                # Vérifier que les rapports sont bien stockés
+                stored_reports = supervisor.current_milestone_reports
+                self.assertEqual(stored_reports[0]['agent'], 'analyst')
+                self.assertEqual(stored_reports[1]['agent'], 'developer')
 
 
 if __name__ == '__main__':

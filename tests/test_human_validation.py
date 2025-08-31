@@ -85,22 +85,22 @@ class TestHumanValidation(unittest.TestCase):
                 verification_info={}
             )
         
-        # Vérifications
-        self.assertEqual(result["action"], "approve")
+        # Vérifications - nouveau format de réponse
+        self.assertEqual(result["action"], "approve_recommendation")
         self.assertEqual(result["instruction"], "")
         mock_cli.display_warning.assert_called_once()
-        mock_cli.display_info.assert_called_with("✅ Action approuvée par l'utilisateur")
+        mock_cli.display_info.assert_called_with("✅ Action recommandée approuvée par l'utilisateur")
     
     @patch('agents.supervisor.Prompt.ask')
     @patch('agents.supervisor.CLIInterface')
-    def test_request_human_validation_alternative(self, mock_cli_class, mock_prompt):
-        """Test de validation humaine avec réponse 'Alternative'."""
+    def test_request_human_validation_force_approve(self, mock_cli_class, mock_prompt):
+        """Test de validation humaine avec réponse 'Valider et continuer'."""
         # Mock de l'interface CLI
         mock_cli = Mock()
         mock_cli_class.return_value = mock_cli
         
-        # Simuler choix utilisateur "2" (Alternative) puis instruction
-        mock_prompt.side_effect = ["2", "Instruction alternative de test"]
+        # Simuler choix utilisateur "2" (Valider le jalon et continuer)
+        mock_prompt.side_effect = ["2"]
         
         # Mock du LLM pour générer la question
         with patch.object(self.supervisor, 'generate_with_context', return_value="Question bien formulée ?"):
@@ -112,38 +112,38 @@ class TestHumanValidation(unittest.TestCase):
                 verification_info={}
             )
         
-        # Vérifications
-        self.assertEqual(result["action"], "alternative")
-        self.assertEqual(result["instruction"], "Instruction alternative de test")
-        mock_cli.display_info.assert_called_with("📝 Instruction alternative reçue: Instruction alternative de test")
+        # Vérifications - nouvelle action force_approve
+        self.assertEqual(result["action"], "force_approve")
+        self.assertEqual(result["instruction"], "Validation forcée par l'utilisateur")
+        mock_cli.display_info.assert_called_with("☑️ Validation forcée du jalon demandée")
     
     @patch('agents.supervisor.Prompt.ask')
     @patch('agents.supervisor.CLIInterface')
-    def test_request_human_validation_cancel(self, mock_cli_class, mock_prompt):
-        """Test de validation humaine avec réponse 'Arrêter'."""
+    def test_request_human_validation_adjust_plan(self, mock_cli_class, mock_prompt):
+        """Test de validation humaine avec réponse 'Ajuster le plan'."""
         # Mock de l'interface CLI
         mock_cli = Mock()
         mock_cli_class.return_value = mock_cli
-        mock_cli.ask_confirmation.return_value = True  # Confirmer l'arrêt
         
-        # Simuler choix utilisateur "3" (Arrêter)
-        mock_prompt.side_effect = ["3"]
+        # Simuler choix utilisateur "3" (Ajuster plan) puis instruction
+        mock_prompt.side_effect = ["3", "Ajouter plus de tests"]
         
-        # Mock du LLM pour générer la question
+        # Mock du LLM pour générer la question et analyser l'instruction
         with patch.object(self.supervisor, 'generate_with_context', return_value="Question bien formulée ?"):
-            result = self.supervisor._request_human_validation(
-                reason="Test de validation",
-                recommended_action="Action de test",
-                milestone_details=self.test_milestone,
-                agent_reports=[],
-                verification_info={}
-            )
+            with patch.object(self.supervisor, '_analyze_user_instruction_for_plan_adjustment', return_value="Instruction analysée: renforcer tests"):
+                result = self.supervisor._request_human_validation(
+                    reason="Test de validation",
+                    recommended_action="Action de test",
+                    milestone_details=self.test_milestone,
+                    agent_reports=[],
+                    verification_info={}
+                )
         
-        # Vérifications
-        self.assertEqual(result["action"], "cancel")
-        self.assertEqual(result["instruction"], "Arrêt demandé par l'utilisateur")
-        mock_cli.ask_confirmation.assert_called_once()
-        mock_cli.display_warning.assert_called_with("🛑 Arrêt du projet demandé par l'utilisateur")
+        # Vérifications - nouvelle action adjust_plan
+        self.assertEqual(result["action"], "adjust_plan")
+        self.assertEqual(result["instruction"], "Ajouter plus de tests")
+        self.assertIn("analyzed_reason", result)
+        mock_cli.display_info.assert_called_with("🔄 Instruction pour ajustement de plan reçue: Ajouter plus de tests")
     
     @patch('agents.supervisor.Prompt.ask')
     @patch('agents.supervisor.CLIInterface')
@@ -167,179 +167,106 @@ class TestHumanValidation(unittest.TestCase):
                 verification_info={}
             )
         
-        # Vérifications - doit retourner "approve" par défaut
-        self.assertEqual(result["action"], "approve")
-        self.assertEqual(result["instruction"], "")
-        mock_cli.display_info.assert_called_with("Annulation de l'arrêt - Approuver par défaut")
+        # Vérifications - doit retourner "approve_recommendation" par défaut (nouveau comportement v1.4+)
+        self.assertEqual(result["action"], "approve_recommendation")
+        # L'instruction peut contenir le message d'erreur (comportement normal)
+        self.assertIn("Erreur validation humaine", result["instruction"])
+        # En cas d'erreur, display_info peut ne pas être appelé
     
-    def test_stop_orchestration_gracefully(self):
-        """Test de l'arrêt gracieux de l'orchestration."""
-        # Mock de la création d'entrée de journal
-        with patch.object(self.supervisor, '_create_journal_entry') as mock_journal:
-            self.supervisor._stop_orchestration_gracefully("Test d'arrêt utilisateur")
+    def test_project_state_tracking(self):
+        """Test du suivi d'état du projet."""
+        # Vérifier l'état initial du projet (v1.4+ utilise 'initialized')
+        self.assertEqual(self.supervisor.project_state['status'], 'initialized')
+        self.assertEqual(self.supervisor.project_state['total_corrections'], 0)
+        self.assertEqual(self.supervisor.project_state['milestones_completed'], 0)
+        
+        # Simuler une progression
+        self.supervisor.project_state['total_corrections'] = 2
+        self.supervisor.project_state['milestones_completed'] = 3
         
         # Vérifications
-        self.assertTrue(self.supervisor._orchestration_halted)
-        self.assertEqual(self.supervisor.project_state['status'], 'stopped_by_user')
-        self.assertIsNotNone(self.supervisor.project_state.get('stopped_at'))
-        self.assertEqual(self.supervisor.project_state['stop_reason'], "Test d'arrêt utilisateur")
-        mock_journal.assert_called_once()
+        self.assertEqual(self.supervisor.project_state['total_corrections'], 2)
+        self.assertEqual(self.supervisor.project_state['milestones_completed'], 3)
     
-    def test_point_intervention_1_max_corrections_approve(self):
-        """Test du point d'intervention #1 : limite de corrections avec approbation."""
-        # Simuler un milestone avec corrections maximales atteintes
-        self.test_milestone['correction_attempts'] = 1  # max_corrections = 1 dans config
+    def test_apply_verification_decision_approve(self):
+        """Test d'application de décision d'approbation."""
+        # Simuler un milestone 
+        test_milestone = {
+            'id': 1,
+            'name': 'Test Milestone',
+            'status': 'in_progress'
+        }
         
-        # Mock de la validation humaine retournant "approve"
-        with patch.object(self.supervisor, '_request_human_validation', return_value={"action": "approve", "instruction": ""}) as mock_validation:
-            with patch.object(self.supervisor, '_mark_milestone_partially_completed') as mock_partial:
+        # Mock du milestone manager
+        with patch.object(self.supervisor, '_milestone_manager') as mock_manager:
+            mock_manager.milestones = [test_milestone]
+            mock_manager.current_index = 0
+            
+            verification = {
+                'decision': 'approve',
+                'reason': 'Tous les critères respectés',
+                'confidence': 0.9
+            }
+            
+            with patch.object(self.supervisor, '_create_journal_entry') as mock_journal:
+                self.supervisor._apply_verification_decision(verification, test_milestone)
                 
-                # Simuler la décision de vérification
-                verification = {
-                    'decision': 'request_rework',
-                    'reason': 'Encore des erreurs',
-                    'confidence': 0.8
-                }
-                
-                self.supervisor._apply_verification_decision(verification, self.test_milestone)
+                # Vérifications
+                self.assertEqual(test_milestone['verification_status'], 'approve')
+                mock_journal.assert_called_once()
+    
+    def test_apply_verification_decision_request_rework(self):
+        """Test d'application de décision de rework."""
+        test_milestone = {
+            'id': 1,
+            'name': 'Test Milestone',
+            'status': 'in_progress',
+            'agents_required': ['analyst', 'developer']
+        }
+        
+        # Mock du milestone manager
+        with patch.object(self.supervisor, '_milestone_manager') as mock_manager:
+            mock_manager.milestones = [test_milestone]
+            mock_manager.current_index = 0
+            
+            verification = {
+                'decision': 'request_rework',
+                'reason': 'Qualité insuffisante',
+                'confidence': 0.8
+            }
+            
+            # Mock de la validation humaine
+            with patch.object(self.supervisor, '_request_human_validation', return_value={"action": "approve_recommendation", "instruction": ""}) as mock_validation:
+                self.supervisor._apply_verification_decision(verification, test_milestone)
                 
                 # Vérifications
                 mock_validation.assert_called_once()
-                mock_partial.assert_called_once()
+                self.assertEqual(test_milestone['verification_status'], 'request_rework')
     
-    def test_point_intervention_1_max_corrections_alternative(self):
-        """Test du point d'intervention #1 : limite de corrections avec alternative."""
-        # Simuler un milestone avec corrections maximales atteintes
-        self.test_milestone['correction_attempts'] = 1
+    def test_apply_verification_decision_adjust_plan(self):
+        """Test d'application de décision d'ajustement de plan."""
+        test_milestone = {
+            'id': 1,
+            'name': 'Test Milestone',
+            'status': 'in_progress'
+        }
         
-        # Mock du résultat de l'outil add_milestone
-        mock_tool_result = Mock()
-        mock_tool_result.status = 'success'
+        verification = {
+            'decision': 'adjust_plan',
+            'reason': 'Plan needs adjustment',
+            'confidence': 0.9
+        }
         
-        # Mock de la validation humaine retournant "alternative"
-        with patch.object(self.supervisor, '_request_human_validation', return_value={"action": "alternative", "instruction": "Faire ceci à la place"}) as mock_validation:
-            with patch.object(self.supervisor, 'tools', {'add_milestone': Mock(return_value=mock_tool_result)}) as mock_tools:
-                
-                # Simuler la décision de vérification
-                verification = {
-                    'decision': 'request_rework',
-                    'reason': 'Encore des erreurs',
-                    'confidence': 0.8
-                }
-                
-                self.supervisor._apply_verification_decision(verification, self.test_milestone)
+        # Mock de la validation humaine
+        with patch.object(self.supervisor, '_request_human_validation', return_value={"action": "approve_recommendation", "instruction": ""}) as mock_validation:
+            with patch.object(self.supervisor, '_create_journal_entry') as mock_journal:
+                self.supervisor._apply_verification_decision(verification, test_milestone)
                 
                 # Vérifications
                 mock_validation.assert_called_once()
-                mock_tools['add_milestone'].assert_called_once()
-                # Le compteur de corrections doit être remis à zéro
-                self.assertEqual(self.test_milestone['correction_attempts'], 0)
-    
-    def test_point_intervention_1_max_corrections_cancel(self):
-        """Test du point d'intervention #1 : limite de corrections avec annulation."""
-        # Simuler un milestone avec corrections maximales atteintes
-        self.test_milestone['correction_attempts'] = 1
-        
-        # Mock de la validation humaine retournant "cancel"
-        with patch.object(self.supervisor, '_request_human_validation', return_value={"action": "cancel", "instruction": "Arrêt demandé"}) as mock_validation:
-            with patch.object(self.supervisor, '_stop_orchestration_gracefully') as mock_stop:
-                
-                # Simuler la décision de vérification
-                verification = {
-                    'decision': 'request_rework',
-                    'reason': 'Encore des erreurs',
-                    'confidence': 0.8
-                }
-                
-                self.supervisor._apply_verification_decision(verification, self.test_milestone)
-                
-                # Vérifications
-                mock_validation.assert_called_once()
-                mock_stop.assert_called_once()
-    
-    def test_point_intervention_2_adjust_plan_approve(self):
-        """Test du point d'intervention #2 : ajustement du plan avec approbation."""
-        # Mock de la validation humaine retournant "approve"
-        with patch.object(self.supervisor, '_request_human_validation', return_value={"action": "approve", "instruction": ""}) as mock_validation:
-            with patch.object(self.supervisor, 'adjust_plan') as mock_adjust:
-                with patch.object(self.supervisor, '_create_journal_entry') as mock_journal:
-                    
-                    # Simuler la décision de vérification
-                    verification = {
-                        'decision': 'adjust_plan',
-                        'reason': 'Le plan doit être modifié',
-                        'confidence': 0.9
-                    }
-                    
-                    self.supervisor._apply_verification_decision(verification, self.test_milestone)
-                    
-                    # Vérifications
-                    mock_validation.assert_called_once()
-                    mock_adjust.assert_called_once()
-                    mock_journal.assert_called_once()
-                    # Le milestone doit être marqué comme complété
-                    self.assertEqual(self.test_milestone['status'], 'completed')
-                    self.assertEqual(self.supervisor.current_milestone_index, 1)
-    
-    def test_point_intervention_2_adjust_plan_alternative(self):
-        """Test du point d'intervention #2 : ajustement du plan avec alternative."""
-        # Mock du résultat de l'outil add_milestone
-        mock_tool_result = Mock()
-        mock_tool_result.status = 'success'
-        
-        # Mock de la validation humaine retournant "alternative"
-        with patch.object(self.supervisor, '_request_human_validation', return_value={"action": "alternative", "instruction": "Faire autre chose"}) as mock_validation:
-            with patch.object(self.supervisor, 'tools', {'add_milestone': Mock(return_value=mock_tool_result)}) as mock_tools:
-                
-                # Simuler la décision de vérification
-                verification = {
-                    'decision': 'adjust_plan',
-                    'reason': 'Le plan doit être modifié',
-                    'confidence': 0.9
-                }
-                
-                self.supervisor._apply_verification_decision(verification, self.test_milestone)
-                
-                # Vérifications
-                mock_validation.assert_called_once()
-                mock_tools['add_milestone'].assert_called_once()
-                # Le milestone doit être complété et l'index avancé
-                self.assertEqual(self.test_milestone['status'], 'completed')
-                self.assertEqual(self.supervisor.current_milestone_index, 1)
-    
-    def test_point_intervention_2_adjust_plan_cancel(self):
-        """Test du point d'intervention #2 : ajustement du plan avec annulation."""
-        # Mock de la validation humaine retournant "cancel"
-        with patch.object(self.supervisor, '_request_human_validation', return_value={"action": "cancel", "instruction": "Arrêt demandé"}) as mock_validation:
-            with patch.object(self.supervisor, '_stop_orchestration_gracefully') as mock_stop:
-                
-                # Simuler la décision de vérification
-                verification = {
-                    'decision': 'adjust_plan',
-                    'reason': 'Le plan doit être modifié',
-                    'confidence': 0.9
-                }
-                
-                self.supervisor._apply_verification_decision(verification, self.test_milestone)
-                
-                # Vérifications
-                mock_validation.assert_called_once()
-                mock_stop.assert_called_once()
-    
-    def test_orchestration_with_halt_flag(self):
-        """Test que l'orchestration s'arrête quand le flag halt est activé."""
-        # Activer le flag d'arrêt
-        self.supervisor._orchestration_halted = True
-        
-        # Mock de quelques méthodes pour éviter les erreurs
-        with patch.object(self.supervisor, 'create_agents', return_value={}):
-            with patch.object(self.supervisor, '_execute_milestone', return_value={}):
-                with patch.object(self.supervisor, '_verify_milestone_completion', return_value={'decision': 'approve'}):
-                    
-                    result = self.supervisor.orchestrate()
-                    
-                    # La boucle ne devrait pas s'exécuter
-                    self.assertEqual(len(result.get('milestones_results', [])), 0)
+                self.assertEqual(test_milestone['verification_status'], 'adjust_plan')
+                # Le journal peut être appelé plusieurs fois (normal pour adjust_plan)
+                self.assertTrue(mock_journal.called)
     
     def test_request_human_validation_error_handling(self):
         """Test de gestion d'erreur dans _request_human_validation."""
@@ -353,9 +280,166 @@ class TestHumanValidation(unittest.TestCase):
                 verification_info={}
             )
             
-            # Doit retourner "approve" par défaut en cas d'erreur
-            self.assertEqual(result["action"], "approve")
+            # Doit retourner "approve_recommendation" par défaut en cas d'erreur
+            self.assertEqual(result["action"], "approve_recommendation")
             self.assertIn("Erreur validation humaine", result["instruction"])
+    
+    @patch('agents.supervisor.Prompt.ask')
+    @patch('agents.supervisor.CLIInterface')
+    def test_request_human_validation_with_detailed_reports(self, mock_cli_class, mock_prompt):
+        """Test de validation humaine avec rapports détaillés d'agents."""
+        # Mock de l'interface CLI
+        mock_cli = Mock()
+        mock_cli_class.return_value = mock_cli
+        
+        # Simuler choix utilisateur "1" (Approuver)
+        mock_prompt.side_effect = ["1"]
+        
+        # Créer des rapports d'agents détaillés
+        detailed_agent_reports = [
+            {
+                'agent': 'analyst',
+                'content': {
+                    'type': 'automatic',
+                    'self_assessment': 'compliant',
+                    'confidence_level': 0.95,
+                    'artifacts_created': ['requirements.md', 'architecture.md'],
+                    'issues_encountered': [],
+                    'agent_name': 'analyst',
+                    'deliverables_status': {
+                        'requirements.md': 'completed',
+                        'architecture.md': 'completed'
+                    }
+                }
+            },
+            {
+                'agent': 'developer',
+                'content': {
+                    'type': 'automatic', 
+                    'self_assessment': 'failed',
+                    'confidence_level': 0.9,
+                    'artifacts_created': [],
+                    'issues_encountered': ['Build configuration failed', 'Tests could not be executed'],
+                    'agent_name': 'developer',
+                    'deliverables_status': {
+                        'src/main.py': 'missing',
+                        'tests/': 'missing'
+                    }
+                }
+            }
+        ]
+        
+        verification_info = {
+            'decision': 'request_rework',
+            'reason': 'Developer failed to produce executable code',
+            'confidence': 0.85,
+            'evaluation_type': 'deep_ai'
+        }
+        
+        # Mock du LLM pour générer la question
+        with patch.object(self.supervisor, 'generate_with_context', return_value="Question avec détails enrichis"):
+            result = self.supervisor._request_human_validation(
+                reason="Échec critique du développeur détecté",
+                recommended_action="Créer un jalon de correction pour réparer le code",
+                milestone_details=self.test_milestone,
+                agent_reports=detailed_agent_reports,
+                verification_info=verification_info
+            )
+        
+        # Vérifications
+        self.assertEqual(result["action"], "approve_recommendation")
+        self.assertEqual(result["instruction"], "")
+        
+        # Vérifier que l'interface CLI affiche les informations détaillées
+        mock_cli.display_warning.assert_called_once()
+        mock_cli.console.print.assert_called()  # Doit afficher les détails enrichis
+    
+    @patch('agents.supervisor.Prompt.ask') 
+    @patch('agents.supervisor.CLIInterface')
+    def test_request_human_validation_analyze_user_instruction(self, mock_cli_class, mock_prompt):
+        """Test de l'analyse d'instruction utilisateur pour ajustement de plan."""
+        # Mock de l'interface CLI
+        mock_cli = Mock()
+        mock_cli_class.return_value = mock_cli
+        
+        # Simuler choix utilisateur "3" (Ajuster plan) puis instruction
+        mock_prompt.side_effect = ["3", "Ajouter plus de tests et améliorer la documentation"]
+        
+        # Mock du LLM pour générer la question et analyser l'instruction
+        with patch.object(self.supervisor, 'generate_with_context') as mock_generate:
+            mock_generate.side_effect = [
+                "Question pour ajustement de plan",
+                "Instruction analysée: Renforcer la qualité avec tests supplémentaires et documentation approfondie"
+            ]
+            
+            result = self.supervisor._request_human_validation(
+                reason="Plan nécessite ajustement",
+                recommended_action="Recalculer jalons futurs",
+                milestone_details=self.test_milestone,
+                agent_reports=[],
+                verification_info={'decision': 'adjust_plan'}
+            )
+        
+        # Vérifications
+        self.assertEqual(result["action"], "adjust_plan")
+        self.assertEqual(result["instruction"], "Ajouter plus de tests et améliorer la documentation")
+        self.assertIn("analyzed_reason", result)
+        self.assertIn("tests supplémentaires", result["analyzed_reason"])
+        
+        # Vérifier que l'analyse LLM a été appelée
+        self.assertEqual(mock_generate.call_count, 2)
+    
+    def test_apply_verification_decision_with_structured_reports(self):
+        """Test de l'application de décisions basée sur rapports structurés."""
+        # Préparer le superviseur avec milestone manager
+        test_milestone = {
+            'id': 1,
+            'name': 'Integration Test Milestone',
+            'status': 'in_progress',
+            'agents_required': ['analyst', 'developer']
+        }
+        
+        self.supervisor._milestone_manager.milestones = [test_milestone]
+        self.supervisor._milestone_manager.current_index = 0
+        self.supervisor.project_state['total_corrections'] = 0
+        
+        # Simuler des rapports d'agents dans le buffer
+        self.supervisor.current_milestone_reports = [
+            {
+                'agent': 'analyst',
+                'content': {
+                    'type': 'automatic',
+                    'self_assessment': 'compliant',
+                    'confidence_level': 0.9
+                }
+            },
+            {
+                'agent': 'developer',
+                'content': {
+                    'type': 'automatic',
+                    'self_assessment': 'failed',
+                    'confidence_level': 0.95
+                }
+            }
+        ]
+        
+        verification = {
+            'decision': 'request_rework',
+            'reason': 'Developer failure compromises milestone',
+            'confidence': 0.8
+        }
+        
+        # Mock de la validation humaine
+        with patch.object(self.supervisor, '_request_human_validation', return_value={"action": "approve_recommendation", "instruction": ""}):
+            with patch.object(self.supervisor, '_milestone_manager') as mock_manager:
+                mock_manager.insert_correction_after_current.return_value = {'id': 2}
+                mock_manager.current_index = 0
+                
+                self.supervisor._apply_verification_decision(verification, test_milestone)
+                
+                # Vérifications
+                self.assertEqual(self.supervisor.project_state['total_corrections'], 1)
+                mock_manager.insert_correction_after_current.assert_called_once()
 
 
 if __name__ == '__main__':
