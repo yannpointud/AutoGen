@@ -4,11 +4,11 @@
 # du RAG et les stratégies de communication.
 
 general:
-  max_retries: 3
-  retry_delay: 5
-  llm_timeout: 120  # Réduire le timeout pour éviter les blocages
+  max_retries: 10
+  retry_delay: 10
+  llm_timeout: 180  # Réduire le timeout pour éviter les blocages
   conversation_memory_size: 6  # correspond aux deux derniers echanges request+responses
-  conversation_compression_threshold: 50000  #  Seuil en caractères pour déclencher la compression de l'historique 60000 moitié du max appel API
+  conversation_compression_threshold: 60000  #  Seuil en caractères pour déclencher la compression de l'historique 60000 moitié du max appel API
   max_tokens: 32768
   # Rate limiting global pour tous les appels API
   api_rate_limit_interval: 2  # Secondes entre chaque appel API (tous fournisseurs confondus) 
@@ -84,7 +84,7 @@ agents:
   supervisor:
     role: "Superviseur et coordinateur principal du projet"
     personality: "Méthodique, stratégique, orienté résultats. Excellent communicateur qui sait déléguer efficacement."
-    model: "mistral-medium-latest"
+    model: "mistral-large-latest"
     max_milestones: 15
     allow_dynamic_milestones: true
     max_global_corrections: 10  # Maximum de corrections (reworks + plan modifications) pour tout le projet
@@ -100,7 +100,7 @@ agents:
   analyst:
     role: "Expert en analyse, architecture et qualité. Responsable de la conception complète et des standards."
     personality: "Rigoureux, visionnaire. Équilibre parfait entre théorie et pratique."
-    model: "mistral-medium-latest"
+    model: "magistral-medium-latest"
     guidelines:
       - "COMMENCER par identifier le langage/framework approprié selon le projet"
       - "Spécifier la stack technique dans les premières spécifications"
@@ -187,6 +187,14 @@ rag:
       temperature: 0.1                 # Sortie déterministe et précise
       cache_ttl: 600                   # Cache 10min (mots-clés stables dans une session)
       timeout: 10                      # Timeout court pour extraction rapide
+    
+    # Réparation JSON par LLM en dernier recours
+    json_repair:
+      enabled: true                    # Active la réparation JSON par LLM en cas d'échec de toutes les stratégies
+      model: "mistral-small-latest"    # Modèle LLM rapide et économique pour réparation
+      max_tokens: 4096                 # Tokens max pour réparation (JSON complexe possible)
+      temperature: 0.0                 # Sortie déterministe pour réparation précise
+      timeout: 15                      # Timeout pour éviter blocages (secondes)
     
     # Résumé intelligent de contexte long
     context_summarization:

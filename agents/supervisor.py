@@ -1557,9 +1557,10 @@ Maximum 200 mots, style professionnel."""
             
         except Exception as e:
             self.logger.error(f"Erreur vérification jalon: {e}")
-            # En cas d'erreur, approuver pour continuer
+            # En cas d'erreur, refuser par sécurité
+            self.logger.warning(f"⚠️  FALLBACK CONSERVATEUR: Erreur système lors de la vérification - refus par sécurité: {e}")
             return {
-                'decision': 'approve',
+                'decision': 'request_rework',
                 'reason': f'Erreur lors de la vérification: {e}',
                 'confidence': 0.1,
                 'evaluation_type': 'error_fallback'
@@ -1672,9 +1673,13 @@ Réponds avec un JSON:
                     }
             
             # Validation et enrichissement de la réponse
-            decision = evaluation_response.get('decision', 'approve')
-            if decision not in ['approve', 'request_rework', 'adjust_plan']:
-                decision = 'approve'  # Sécurité
+            decision = evaluation_response.get('decision')
+            if decision is None:
+                self.logger.warning("⚠️  FALLBACK CONSERVATEUR: Aucune décision dans la réponse LLM - refus par sécurité")
+                decision = 'request_rework'
+            elif decision not in ['approve', 'request_rework', 'adjust_plan']:
+                self.logger.warning(f"⚠️  FALLBACK CONSERVATEUR: Décision invalide '{decision}' - refus par sécurité")
+                decision = 'request_rework'
             
             result = {
                 'decision': decision,
@@ -1690,9 +1695,10 @@ Réponds avec un JSON:
             
         except Exception as e:
             self.logger.error(f"Erreur évaluation approfondie: {e}")
-            # Fallback conservateur
+            # Fallback conservateur - refuser en cas d'erreur
+            self.logger.warning(f"⚠️  FALLBACK CONSERVATEUR: Erreur évaluation approfondie - refus par sécurité: {e}")
             return {
-                'decision': 'approve',
+                'decision': 'request_rework',
                 'reason': f'Erreur évaluation approfondie: {e}',
                 'confidence': 0.2,
                 'evaluation_type': 'error_fallback'
@@ -1702,7 +1708,10 @@ Réponds avec un JSON:
         """
         PHASE 3: Applique la décision de vérification en utilisant les outils existants.
         """
-        decision = verification.get('decision', 'approve')
+        decision = verification.get('decision')
+        if decision is None:
+            self.logger.warning("⚠️  FALLBACK CONSERVATEUR: Structure de vérification corrompue - refus par sécurité")
+            decision = 'request_rework'
         reason = verification.get('reason', 'Aucune raison spécifiée')
         confidence = verification.get('confidence', 0.5)
         

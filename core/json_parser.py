@@ -4,6 +4,8 @@ Centralise toute la logique de parsing JSON pour éliminer la duplication de cod
 """
 
 import json
+import json5  # Parser JSON avec support multilignes et commentaires
+import dirtyjson  # Parser JSON malformé avec réparation automatique
 import re
 from typing import List, Dict, Any, Callable, Optional
 from utils.logger import get_project_logger
@@ -38,14 +40,21 @@ class RobustJSONParser:
             self._strategy_markdown_json,
             self._strategy_markdown_generic,
             self._strategy_json_direct,
-            # Stratégies de réparation
-            self._strategy_fix_incomplete_universal,
-            self._strategy_progressive_parse_universal,
-            # Fallbacks d'extraction
-            self._strategy_extract_partial_universal,
+            
+            # RÉPARATION INTELLIGENTE (dirtyjson)
+            self._strategy_dirtyjson_repair,
+            
+            # Stratégies de réparation manuelle (AVEC WARNINGS)
+            self._strategy_fix_incomplete_universal_with_warning,
+            self._strategy_progressive_parse_universal_with_warning,
+            # Fallbacks d'extraction (AVEC WARNINGS)
+            self._strategy_extract_partial_universal_with_warning,
             self._strategy_embedded_json,
-            self._strategy_documentation_rescue_universal,
-            self._strategy_regex_fallback_universal
+            self._strategy_documentation_rescue_universal_with_warning,
+            self._strategy_regex_fallback_universal_with_warning,
+            
+            # ULTIME RECOURS : Réparation LLM
+            self._strategy_llm_repair
         ]
         
         for i, strategy in enumerate(strategies, 1):
@@ -335,6 +344,78 @@ class RobustJSONParser:
         
         return tools
     
+    def _clean_multiline_strings(self, json_content: str) -> str:
+        """
+        Nettoie les sauts de ligne bruts dans les valeurs string JSON.
+        Remplace seulement les \\n dans les valeurs de strings, pas dans la structure JSON.
+        """
+        # Pattern pour trouver "key": "value avec \\n potentiels"
+        def fix_string_value(match):
+            key_colon_quote = match.group(1)  # "key": "
+            value = match.group(2)            # le contenu de la string
+            closing = match.group(3)          # " ou ",
+            
+            # Remplacer les sauts de ligne dans la valeur seulement
+            fixed_value = value.replace('\n', '\\n').replace('\r', '\\r')
+            return f'{key_colon_quote}{fixed_value}{closing}'
+        
+        # Pattern : "key": "value" (capture la value qui peut avoir des \\n)  
+        pattern = r'("[^"]+"\s*:\s*")([^"]*(?:\\.[^"]*)*?)("(?:,\s*)?)'
+        result = re.sub(pattern, fix_string_value, json_content, flags=re.DOTALL)
+        
+        return result
+    
+    def _strategy_dirtyjson_repair(self, content: str) -> Any:
+        """
+        Stratégie de réparation utilisant dirtyjson pour corriger les erreurs de syntaxe courantes.
+        (virgules manquantes, littéraux Python, guillemets simples, etc.)
+        """
+        try:
+            # Tente de parser le JSON "sale" avec l'API de base
+            parsed = dirtyjson.loads(content)
+            self.logger.info("✅ JSON réparé automatiquement avec dirtyjson")
+            return parsed
+        except Exception as e:
+            self.logger.debug(f"Stratégie dirtyjson échouée: {str(e)}")
+            return None
+    
+    # === STRATÉGIES AVEC WARNINGS (réparations imparfaites) ===
+    
+    def _strategy_fix_incomplete_universal_with_warning(self, content: str) -> Any:
+        """Version avec warning de fix_incomplete_universal."""
+        result = self._strategy_fix_incomplete_universal(content)
+        if result and result != {}:
+            self.logger.warning("⚠️  JSON réparé manuellement (accolades/crochets) - résultat possiblement imparfait")
+        return result
+    
+    def _strategy_progressive_parse_universal_with_warning(self, content: str) -> Any:
+        """Version avec warning de progressive_parse_universal."""
+        result = self._strategy_progressive_parse_universal(content)
+        if result and result != {}:
+            self.logger.warning("⚠️  JSON parsé progressivement - certaines parties ont pu être ignorées")
+        return result
+    
+    def _strategy_extract_partial_universal_with_warning(self, content: str) -> Any:
+        """Version avec warning de extract_partial_universal."""
+        result = self._strategy_extract_partial_universal(content)
+        if result and result != {}:
+            self.logger.warning("⚠️  JSON extrait partiellement - données possiblement incomplètes")
+        return result
+    
+    def _strategy_documentation_rescue_universal_with_warning(self, content: str) -> Any:
+        """Version avec warning de documentation_rescue_universal."""
+        result = self._strategy_documentation_rescue_universal(content)
+        if result and result != {}:
+            self.logger.warning("⚠️  JSON extrait par stratégie de sauvetage - qualité non garantie")
+        return result
+    
+    def _strategy_regex_fallback_universal_with_warning(self, content: str) -> Any:
+        """Version avec warning de regex_fallback_universal."""
+        result = self._strategy_regex_fallback_universal(content)
+        if result and result != {}:
+            self.logger.warning("⚠️  JSON reconstructé par regex - résultat très possiblement imparfait")
+        return result
+    
     # === STRATÉGIES UNIVERSELLES ROBUSTES ===
     
     def _strategy_markdown_json5(self, response: str) -> Dict[str, Any]:
@@ -343,27 +424,16 @@ class RobustJSONParser:
             json_match = re.search(r'```json\s*(.*?)\s*```', response, re.DOTALL)
             if json_match:
                 json_content = json_match.group(1).strip()
+                # Nettoyer les sauts de ligne bruts dans les strings JSON
+                json_content = self._clean_multiline_strings(json_content)
                 self.logger.debug("JSON5 extrait depuis bloc markdown")
-                try:
-                    import json5
-                    return json5.loads(json_content)
-                except ImportError:
-                    import json
-                    return json.loads(json_content)
+                return json5.loads(json_content)
         return {}
     
     def _strategy_json5_direct_universal(self, content: str) -> Any:
         """Parse JSON5 direct universel (dict ou list)."""
-        try:
-            import json5
-            parsed = json5.loads(content)
-            return parsed
-        except ImportError:
-            import json
-            parsed = json.loads(content)
-            return parsed
-        except:
-            return {}
+        parsed = json5.loads(content)
+        return parsed
     
     def _strategy_fix_incomplete_universal(self, content: str) -> Any:
         """Répare JSON incomplet universel."""
@@ -372,12 +442,7 @@ class RobustJSONParser:
         
         if open_braces > close_braces:
             fixed_content = content + ('}' * (open_braces - close_braces))
-            try:
-                import json5
-                return json5.loads(fixed_content)
-            except:
-                import json
-                return json.loads(fixed_content)
+            return json5.loads(fixed_content)
         return {}
     
     def _strategy_progressive_parse_universal(self, content: str) -> Any:
@@ -413,12 +478,7 @@ class RobustJSONParser:
             
             if brace_count == 0 and end_pos > 0:
                 obj_json = content[:end_pos]
-                try:
-                    import json5
-                    return json5.loads(obj_json)
-                except:
-                    import json
-                    return json.loads(obj_json)
+                return json5.loads(obj_json)
         return {}
     
     def _strategy_extract_partial_universal(self, content: str) -> Any:
@@ -431,11 +491,7 @@ class RobustJSONParser:
                 import json5
                 return json5.loads(match.group(0))
             except:
-                try:
-                    import json
-                    return json.loads(match.group(0))
-                except:
-                    pass
+                return json5.loads(match.group(0))
         return {}
     
     def _strategy_documentation_rescue_universal(self, content: str) -> Any:
@@ -529,6 +585,35 @@ class RobustJSONParser:
                 return parsed
             else:
                 return {}
+    
+    def _strategy_llm_repair(self, content: str) -> Any:
+        """
+        Stratégie de la dernière chance : utilise un LLM pour tenter de réparer le JSON.
+        Cette stratégie n'est appelée qu'après l'échec de toutes les autres méthodes.
+        """
+        self.logger.warning("⚠️  Toutes les stratégies déterministes ont échoué. Tentative de réparation par LLM...")
+        
+        try:
+            # --- IMPORTATION LOCALE POUR ÉVITER LE CYCLE DE DÉPENDANCE ---
+            # Solution propre au problème d'import circulaire
+            from core.lightweight_llm_service import get_lightweight_llm_service
+            
+            # Récupérer une instance du service léger
+            lightweight_service = get_lightweight_llm_service("JSONParser.Repair")
+            
+            # Appeler la méthode de réparation
+            repaired_json = lightweight_service.repair_json(content)
+            
+            if repaired_json is not None:
+                self.logger.info("✅ Réparation JSON par LLM réussie !")
+                return repaired_json
+            else:
+                self.logger.error("❌ Échec final de la réparation JSON par LLM.")
+                return None  # Important de retourner None pour signaler l'échec
+                
+        except Exception as e:
+            self.logger.error(f"❌ Erreur critique lors de la réparation LLM: {str(e)}")
+            return None
 
 
 # Instance globale pour utilisation simple

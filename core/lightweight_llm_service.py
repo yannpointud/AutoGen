@@ -37,7 +37,15 @@ class LightweightLLMService:
         self.summary_temperature = self.summary_config.get('temperature', 0.2)
         self.summary_timeout = self.summary_config.get('timeout', 15)
         
-        self.logger.info(f"LightweightLLMService initialisé - Keywords: {self.keyword_enabled}, Summary: {self.summary_enabled}")
+        # Configuration réparation JSON
+        self.repair_config = self.config.get('json_repair', {})
+        self.repair_enabled = self.repair_config.get('enabled', False)
+        self.repair_model = self.repair_config.get('model', 'mistral-small-latest')
+        self.repair_max_tokens = self.repair_config.get('max_tokens', 4096)
+        self.repair_temperature = self.repair_config.get('temperature', 0.0)
+        self.repair_timeout = self.repair_config.get('timeout', 15)
+        
+        self.logger.info(f"LightweightLLMService initialisé - Keywords: {self.keyword_enabled}, Summary: {self.summary_enabled}, JSONRepair: {self.repair_enabled}")
     
     def extract_keywords(self, prompt: str) -> str:
         """
@@ -379,6 +387,77 @@ Contraintes critiques:"""
         except Exception as e:
             self.logger.error(f"Erreur phase d'alignement: {str(e)}")
             return f"Directive projet: {project_charter[:200]}..."  # Fallback robuste
+    
+    def repair_json(self, malformed_json_string: str) -> Optional[dict | list]:
+        """
+        Tente de réparer une chaîne JSON malformée en utilisant un LLM.
+        
+        Args:
+            malformed_json_string: Chaîne JSON potentiellement malformée
+            
+        Returns:
+            dict|list: Objet JSON réparé, ou None si la réparation échoue
+        """
+        if not self.repair_enabled:
+            self.logger.debug("Réparation JSON désactivée dans la configuration")
+            return None
+        
+        # Validation basique de l'entrée
+        if not malformed_json_string or len(malformed_json_string.strip()) < 2:
+            self.logger.debug("Chaîne JSON vide ou trop courte pour réparation")
+            return None
+        
+        # Tronquer si trop long pour éviter les dépassements de tokens
+        max_input_length = self.repair_max_tokens * 3  # Estimation approximative
+        if len(malformed_json_string) > max_input_length:
+            malformed_json_string = malformed_json_string[:max_input_length]
+            self.logger.warning(f"JSON tronqué à {max_input_length} caractères pour réparation LLM")
+        
+        repair_prompt = f"""CORRIGE le JSON suivant pour qu'il soit valide. Réponds UNIQUEMENT avec le JSON corrigé, commençant directement par `{{` ou `[`.
+
+RÈGLES DE RÉPARATION :
+- Ajoute les accolades/crochets manquants
+- Échappe correctement les guillemets dans les chaînes
+- Supprime les virgules traînantes
+- Corrige la syntaxe des chaînes multilignes
+- Assure-toi que la structure est complète et valide
+
+--- JSON MALFORMÉ ---
+{malformed_json_string}
+--- FIN ---
+
+JSON CORRIGÉ :"""
+        
+        try:
+            llm = LLMFactory.create(model=self.repair_model)
+            
+            repaired_string = llm.generate(
+                prompt=repair_prompt,
+                max_tokens=self.repair_max_tokens,
+                temperature=self.repair_temperature,
+                agent_context={'agent_name': 'JSONRepairer'}
+            )
+            
+            # Nettoyer la réponse (supprimer markdown, espaces, etc.)
+            repaired_string = repaired_string.strip()
+            
+            # Supprimer les blocs markdown si présents
+            if repaired_string.startswith('```'):
+                lines = repaired_string.split('\n')
+                if len(lines) > 2:
+                    # Enlever première et dernière ligne (markdown)
+                    repaired_string = '\n'.join(lines[1:-1])
+            
+            # Tentative de parsing avec json5 pour validation
+            import json5
+            repaired_json = json5.loads(repaired_string)
+            
+            self.logger.info("✅ Réparation JSON par LLM réussie")
+            return repaired_json
+            
+        except Exception as e:
+            self.logger.error(f"❌ Échec de la réparation JSON par LLM: {str(e)}")
+            return None
 
 
 # Instance globale partagée (singleton simple)

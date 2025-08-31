@@ -256,7 +256,7 @@ Ce projet est sous licence MIT. Voir le fichier LICENSE pour plus de détails.
 
 ## 👨‍💻 Auteur et Opportunités
 
-Développé par Yann POINTUD / yannpointud. 
+Développé par Yann POINTUD / yann@pointud.fr
 Passionné par l'ingénierie de systèmes IA autonomes, robustes et efficaces.
 Actuellement disponible, n'hésitez pas à me contacter pour discuter de la manière dont mes compétences peuvent aider à la réussite de vos projets.
 

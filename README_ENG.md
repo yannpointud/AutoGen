@@ -256,7 +256,7 @@ This project is under MIT license. See the LICENSE file for more details.
 
 ## 👨‍💻 Author and Opportunities
 
-Developed by Yann POINTUD / yannpointud. 
+Developed by Yann POINTUD / yann@pointud.fr 
 Passionate about engineering autonomous, robust and efficient AI systems.
 Currently available, feel free to contact me to discuss how my skills can help with the success of your projects.
 

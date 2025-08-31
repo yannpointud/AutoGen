@@ -2,6 +2,15 @@
 
 Toutes les modifications notables de ce projet sont documentées dans ce fichier.
 
+## [1.6.3] - 2025-08-31
+### 🔧 Amélioré
+  - **Parser JSON robuste** : Ajout de `dirtyjson` pour réparer JSON malformé des LLMs + nettoyage multilignes pour `json5` + warnings sur réparations imparfaites
+  - **LightweightSvc Parser** Ajout également d'un appel lightweightSvc pour demander a llm leger de corriger json en dernier recours
+  - **Dépendances** : Ajout `dirtyjson>=1.0.8` dans requirements.txt et conda-requirements.yml
+
+## [1.6.2] - 2025-08-31
+### 🐛 Corrigé
+  - **Update tests unitaires** : Suite au dernieres modifications, refonte de plusieurs tests unitaires 
 
 ## [1.6.1] - 2025-08-30
 ### 🐛 Corrigé
@@ -28,7 +37,6 @@ Toutes les modifications notables de ce projet sont documentées dans ce fichier
   - **Échec insertion corrections** : Correction erreur "Jalon X non trouvé" causée par références vers jalons supprimés
   - **Race conditions jalons** : Synchronisation compteurs et journalisation pour cohérence des progressions
   - **Interface ambiguë** : "Valider jalon" créait des corrections au lieu d'approuver les jalons
-  - ## **Bug detecté** : L'analyst n'arrive pas a faire correspondre dans deliverables_mappings certaines demandes du superviseur (diagrammes)
 
 ## [1.4.0] - 2025-08-26
 
