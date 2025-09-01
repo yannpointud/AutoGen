@@ -84,7 +84,7 @@ agents:
   supervisor:
     role: "Superviseur et coordinateur principal du projet"
     personality: "Méthodique, stratégique, orienté résultats. Excellent communicateur qui sait déléguer efficacement."
-    model: "mistral-large-latest"
+    model: "mistral-medium-latest"
     max_milestones: 15
     allow_dynamic_milestones: true
     max_global_corrections: 10  # Maximum de corrections (reworks + plan modifications) pour tout le projet
@@ -100,7 +100,7 @@ agents:
   analyst:
     role: "Expert en analyse, architecture et qualité. Responsable de la conception complète et des standards."
     personality: "Rigoureux, visionnaire. Équilibre parfait entre théorie et pratique."
-    model: "magistral-medium-latest"
+    model: "mistral-medium-latest"
     guidelines:
       - "COMMENCER par identifier le langage/framework approprié selon le projet"
       - "Spécifier la stack technique dans les premières spécifications"

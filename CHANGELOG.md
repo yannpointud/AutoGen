@@ -2,6 +2,12 @@
 
 Toutes les modifications notables de ce projet sont documentées dans ce fichier.
 
+## [1.7.0] - 2025-09-01
+### 🎉 Ajouté
+  - **Dashboard visualisation logs debug** : Ajout d'un fichier HTML capable d'importer les logs de llm_debug dans un format lisible
+### 🔧 Amélioré
+  - **Centralisation logs debug** : désormais dans dossier projects/***/logs
+
 ## [1.6.3] - 2025-08-31
 ### 🔧 Amélioré
   - **Parser JSON robuste** : Ajout de `dirtyjson` pour réparer JSON malformé des LLMs + nettoyage multilignes pour `json5` + warnings sur réparations imparfaites

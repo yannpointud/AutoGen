@@ -252,6 +252,10 @@ class AutoGenMain:
         project_name = project["name"]
         project_prompt = project["prompt"]
         
+        # Définir le contexte projet global pour les logs LLM
+        from utils.project_context import set_current_project
+        set_current_project(project_name)
+        
         # Créer la structure du projet
         self.console.print(f"\n[bold]📁 Création du projet {project_name}...[/bold]")
         project_path = self.project_manager.create_project_structure(project_name)

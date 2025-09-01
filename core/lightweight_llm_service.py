@@ -7,6 +7,7 @@ from typing import Optional
 from core.llm_connector import LLMFactory
 from config import default_config
 from utils.logger import get_project_logger
+from utils.project_context import get_current_project
 
 
 class LightweightLLMService:
@@ -88,7 +89,10 @@ Mots-clés:'''
                 prompt=extraction_prompt,
                 max_tokens=self.keyword_max_tokens,
                 temperature=self.keyword_temperature,
-                agent_context={'agent_name': 'LightweightSvc'}
+                agent_context={
+                    'agent_name': 'LightweightSvc',
+                    'project_name': get_current_project()
+                }
             )
             
             # Nettoyer et valider le résultat
@@ -146,7 +150,10 @@ Résumé structuré:'''
                 prompt=summarization_prompt,
                 max_tokens=self.summary_max_output // 3,  # Estimation tokens ≈ chars/3
                 temperature=self.summary_temperature,
-                agent_context={'agent_name': 'LightweightSvc'}
+                agent_context={
+                    'agent_name': 'LightweightSvc',
+                    'project_name': get_current_project()
+                }
             )
             
             summary = result.strip()
@@ -205,7 +212,10 @@ Résumé technique détaillé:'''
                 prompt=conversation_prompt,
                 max_tokens=self.summary_max_output // 3,  # Compression modérée (vs //6)
                 temperature=0.2,  # Légèrement plus créatif pour préserver détails
-                agent_context={'agent_name': 'LightweightSvc'}
+                agent_context={
+                    'agent_name': 'LightweightSvc',
+                    'project_name': get_current_project()
+                }
             )
             
             summary = result.strip()
@@ -293,7 +303,10 @@ Réponds UNIQUEMENT avec un JSON valide au format suivant, sans aucun autre text
                 prompt=evaluation_prompt, 
                 temperature=0.1, 
                 max_tokens=200,
-                agent_context={'agent_name': 'LightweightSvc'}
+                agent_context={
+                    'agent_name': 'LightweightSvc',
+                    'project_name': get_current_project()
+                }
             )
             
             # Utiliser le parser JSON centralisé robuste
@@ -371,7 +384,10 @@ Contraintes critiques:"""
                 prompt=alignment_prompt,
                 max_tokens=800,  # Suffisant pour contraintes détaillées
                 temperature=0.1,   # Très factuel
-                agent_context={'agent_name': 'LightweightSvc'}
+                agent_context={
+                    'agent_name': 'LightweightSvc',
+                    'project_name': get_current_project()
+                }
             )
             
             # Validation et nettoyage
@@ -435,7 +451,10 @@ JSON CORRIGÉ :"""
                 prompt=repair_prompt,
                 max_tokens=self.repair_max_tokens,
                 temperature=self.repair_temperature,
-                agent_context={'agent_name': 'JSONRepairer'}
+                agent_context={
+                    'agent_name': 'JSONRepairer',
+                    'project_name': get_current_project()
+                }
             )
             
             # Nettoyer la réponse (supprimer markdown, espaces, etc.)

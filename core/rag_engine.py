@@ -183,10 +183,15 @@ class CompressionManager:
             Sois concis et factuel.
             """
             
+            from utils.project_context import get_current_project
             summary_text = llm.generate(
                 prompt=prompt,
                 temperature=0.3,
-                max_tokens=self.rag.max_tokens_summary
+                max_tokens=self.rag.max_tokens_summary,
+                agent_context={
+                    'agent_name': 'RAGEngine',
+                    'project_name': get_current_project()
+                }
             )
             
             # Créer le résumé avec métadonnées

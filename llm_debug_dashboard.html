@@ -1,0 +1,1117 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM Debug Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0d1117;
+            color: #c9d1d9;
+            overflow-x: hidden;
+        }
+
+        .container {
+            display: flex;
+            height: 100vh;
+        }
+
+        .sidebar {
+            width: 300px;
+            background: #161b22;
+            border-right: 1px solid #30363d;
+            padding: 20px;
+            overflow-y: auto;
+        }
+
+        .main-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .header {
+            background: #161b22;
+            padding: 15px 20px;
+            border-bottom: 1px solid #30363d;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .header-center {
+            display: flex;
+            gap: 10px;
+        }
+
+        .header-right {
+            margin-left: auto;
+        }
+
+        .content {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+        }
+
+        h1 {
+            color: #58a6ff;
+            font-size: 24px;
+            margin-bottom: 20px;
+        }
+
+        h2 {
+            color: #7c3aed;
+            font-size: 18px;
+            margin-bottom: 15px;
+            border-bottom: 1px solid #30363d;
+            padding-bottom: 5px;
+        }
+
+        .upload-section {
+            background: #21262d;
+            border: 2px dashed #30363d;
+            border-radius: 8px;
+            padding: 30px;
+            text-align: center;
+            margin-bottom: 20px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .upload-section:hover {
+            border-color: #58a6ff;
+            background: #0d1117;
+        }
+
+        .upload-section.dragover {
+            border-color: #7c3aed;
+            background: #161b22;
+        }
+
+        #fileInput {
+            display: none;
+        }
+
+        .upload-text {
+            font-size: 16px;
+            margin-bottom: 10px;
+        }
+
+        .upload-hint {
+            color: #8b949e;
+            font-size: 14px;
+        }
+
+        .filter-group {
+            margin-bottom: 20px;
+        }
+
+        .filter-group label {
+            display: block;
+            margin-bottom: 5px;
+            color: #f0f6fc;
+            font-weight: 500;
+        }
+
+        .filter-input {
+            width: 100%;
+            padding: 8px 12px;
+            background: #21262d;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            color: #c9d1d9;
+            font-size: 14px;
+        }
+
+        .filter-input:focus {
+            outline: none;
+            border-color: #58a6ff;
+            box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.1);
+        }
+
+        select.filter-input {
+            cursor: pointer;
+        }
+
+        .checkbox-group {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 8px;
+        }
+
+        .checkbox-item {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .checkbox-item input[type="checkbox"] {
+            accent-color: #58a6ff;
+        }
+
+        .stats-section {
+            background: #21262d;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        .stat-item {
+            text-align: center;
+            padding: 10px;
+            background: #161b22;
+            border-radius: 6px;
+        }
+
+        .stat-value {
+            font-size: 16px;
+            font-weight: bold;
+            color: #58a6ff;
+        }
+
+        .stat-label {
+            font-size: 12px;
+            color: #8b949e;
+            margin-top: 4px;
+        }
+
+        .conversation {
+            background: #21262d;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            overflow: hidden;
+            border: 2px solid #7c3aed40;
+            box-shadow: 0 2px 8px rgba(124, 58, 237, 0.15);
+        }
+
+        .conversation-header {
+            background: #7c3aed20;
+            padding: 12px 15px;
+            border-bottom: 1px solid #30363d;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .conversation-title {
+            color: #f0f6fc;
+            font-weight: 500;
+        }
+
+        .conversation-meta {
+            font-size: 12px;
+            color: #8b949e;
+        }
+
+        .message {
+            padding: 15px;
+            border-bottom: 1px solid #30363d;
+        }
+
+        .message:last-child {
+            border-bottom: none;
+        }
+
+        .message-header {
+            font-size: 14px;
+            margin-bottom: 8px;
+            color: #58a6ff;
+        }
+
+        .message-timestamp {
+            font-size: 12px;
+            color: #8b949e;
+            margin-bottom: 8px;
+        }
+
+        .message hr {
+            border: none;
+            border-top: 1px solid #30363d;
+            margin: 10px 0;
+        }
+
+        .agent-supervisor { color: #f85149; }
+        .agent-analyst { color: #7c3aed; }
+        .agent-developer { color: #238636; }
+
+        .direction-request {
+            background: #0d1117;
+            border-left: 3px solid #58a6ff;
+        }
+
+        .direction-response {
+            background: #161b22;
+            border-left: 3px solid #7c3aed;
+        }
+
+
+        .message-content {
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 12px;
+            margin-top: 10px;
+            font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+            font-size: 13px;
+            line-height: 1.6;
+            max-height: 300px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        .message-content.collapsed {
+            max-height: 80px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .message-content.collapsed::after {
+            content: '...';
+            position: absolute;
+            bottom: 0;
+            right: 0;
+            background: linear-gradient(90deg, transparent, #0d1117);
+            padding: 0 10px;
+        }
+
+        .expand-btn {
+            background: #21262d;
+            border: 1px solid #30363d;
+            color: #58a6ff;
+            padding: 4px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            margin-top: 8px;
+        }
+
+        .expand-btn:hover {
+            background: #30363d;
+        }
+
+        .no-data {
+            text-align: center;
+            padding: 60px 20px;
+            color: #8b949e;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #58a6ff;
+        }
+
+        .btn {
+            background: #238636;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background-color 0.2s;
+        }
+
+        .btn:hover {
+            background: #2ea043;
+        }
+
+        .btn-secondary {
+            background: #21262d;
+            color: #c9d1d9;
+            border: 1px solid #30363d;
+        }
+
+        .btn-secondary:hover {
+            background: #30363d;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                flex-direction: column;
+            }
+            
+            .sidebar {
+                width: 100%;
+                height: auto;
+                max-height: 300px;
+            }
+            
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="sidebar">
+            <h1>🤖 LLM Dashboard</h1>
+            
+            <div class="upload-section" onclick="document.getElementById('fileInput').click()">
+                <div class="upload-text">📁 Charger logs JSONL</div>
+                <div class="upload-hint">Cliquez ou glissez-déposez vos fichiers .jsonl</div>
+                <input type="file" id="fileInput" accept=".jsonl" multiple>
+            </div>
+
+            <div class="stats-section" id="statsSection" style="display: none;">
+                <h2 id="statsTitle">📊 Statistiques</h2>
+                <div class="stats-grid" id="statsGrid"></div>
+            </div>
+
+            <div class="filter-group">
+                <label>🔍 Recherche</label>
+                <input type="text" id="searchInput" class="filter-input" placeholder="Rechercher dans les messages...">
+            </div>
+
+            <div class="filter-group">
+                <label>👥 Agents</label>
+                <div class="checkbox-group" id="agentFilters"></div>
+            </div>
+
+            <div class="filter-group">
+                <label>🔄 Direction</label>
+                <div class="checkbox-group">
+                    <div class="checkbox-item">
+                        <input type="checkbox" id="filterRequest" checked>
+                        <label for="filterRequest">REQUEST</label>
+                    </div>
+                    <div class="checkbox-item">
+                        <input type="checkbox" id="filterResponse" checked>
+                        <label for="filterResponse">RESPONSE</label>
+                    </div>
+                </div>
+            </div>
+
+
+            <div class="filter-group">
+                <button id="clearFilters" class="btn btn-secondary" style="width: 100%;">🗑️ Effacer filtres</button>
+            </div>
+        </div>
+
+        <div class="main-content">
+            <div class="header">
+                <div>
+                    <span id="totalMessages">0</span> messages | 
+                    <span id="filteredMessages">0</span> affichés
+                </div>
+                <div class="header-center">
+                    <button id="collapseAllBtn" class="btn btn-secondary">📁 Tout réduire</button>
+                    <button id="expandAllBtn" class="btn btn-secondary">📂 Tout étendre</button>
+                </div>
+                <div class="header-right">
+                    <button id="exportBtn" class="btn" style="display: none;">💾 Exporter</button>
+                </div>
+            </div>
+            
+            <div class="content">
+                <div id="conversationsContainer">
+                    <div class="no-data">
+                        <h2>Aucun log chargé</h2>
+                        <p>Utilisez le bouton "Charger logs JSONL" pour commencer.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        class LLMDashboard {
+            constructor() {
+                this.rawData = [];
+                this.conversations = [];
+                this.filteredConversations = [];
+                this.agents = new Set();
+                
+                this.initializeEventListeners();
+            }
+
+            initializeEventListeners() {
+                // File upload
+                const fileInput = document.getElementById('fileInput');
+                const uploadSection = document.querySelector('.upload-section');
+                
+                fileInput.addEventListener('change', (e) => this.handleFileUpload(e));
+                
+                // Drag and drop
+                uploadSection.addEventListener('dragover', (e) => {
+                    e.preventDefault();
+                    uploadSection.classList.add('dragover');
+                });
+                
+                uploadSection.addEventListener('dragleave', () => {
+                    uploadSection.classList.remove('dragover');
+                });
+                
+                uploadSection.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    uploadSection.classList.remove('dragover');
+                    this.handleFileUpload({ target: { files: e.dataTransfer.files } });
+                });
+
+                // Filters
+                document.getElementById('searchInput').addEventListener('input', () => this.applyFilters());
+                document.getElementById('filterRequest').addEventListener('change', () => this.applyFilters());
+                document.getElementById('filterResponse').addEventListener('change', () => this.applyFilters());
+                document.getElementById('clearFilters').addEventListener('click', () => this.clearFilters());
+                
+                // Buttons
+                document.getElementById('collapseAllBtn').addEventListener('click', () => this.collapseAll());
+                document.getElementById('expandAllBtn').addEventListener('click', () => this.expandAll());
+                document.getElementById('exportBtn').addEventListener('click', () => this.exportData());
+            }
+
+            async handleFileUpload(event) {
+                const files = Array.from(event.target.files);
+                if (files.length === 0) return;
+
+                document.getElementById('conversationsContainer').innerHTML = '<div class="loading">🔄 Chargement des logs...</div>';
+
+                try {
+                    this.rawData = [];
+                    
+                    for (const file of files) {
+                        const content = await this.readFile(file);
+                        const lines = content.split('\n').filter(line => line.trim());
+                        
+                        for (const line of lines) {
+                            try {
+                                const data = JSON.parse(line);
+                                // Vérifier que l'objet a au moins un timestamp ou une structure reconnaissable
+                                if (data && (data.timestamp || data.time || data.agent_name || data.message)) {
+                                    this.rawData.push(data);
+                                } else {
+                                    console.warn('Ligne JSON ignorée (structure non reconnue):', line.substring(0, 100) + '...');
+                                }
+                            } catch (e) {
+                                console.warn('Ligne JSON invalide ignorée:', line.substring(0, 100) + '...', e.message);
+                            }
+                        }
+                    }
+
+                    console.log(`Chargés: ${this.rawData.length} éléments JSON depuis ${files.length} fichier(s)`);
+                    
+                    this.processData();
+                    console.log(`Créées: ${this.conversations.length} conversation(s)`);
+                    
+                    this.buildFilters();
+                    this.renderConversations();
+                    this.updateFilteredStats();
+                    
+                    document.getElementById('exportBtn').style.display = 'block';
+                    document.getElementById('statsSection').style.display = 'block';
+                    
+                } catch (error) {
+                    console.error('Erreur lors du chargement:', error);
+                    document.getElementById('conversationsContainer').innerHTML = 
+                        `<div class="no-data">
+                            <h2>❌ Erreur</h2>
+                            <p>Impossible de charger les fichiers.</p>
+                            <p style="color: #f85149; font-size: 12px; margin-top: 10px;">
+                                Détails: ${error.message}
+                            </p>
+                            <p style="color: #8b949e; font-size: 11px;">
+                                Vérifiez la console du navigateur (F12) pour plus d'informations.
+                            </p>
+                        </div>`;
+                }
+            }
+
+            readFile(file) {
+                return new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = e => resolve(e.target.result);
+                    reader.onerror = reject;
+                    reader.readAsText(file);
+                });
+            }
+
+            processData() {
+                // Grouper par sequence_id et trier
+                const grouped = {};
+                
+                this.rawData.forEach((item, index) => {
+                    try {
+                        // Gérer les cas où sequence_id pourrait ne pas exister
+                        const sequenceId = item.sequence_id || item.id || `auto_${index}`;
+                        if (!grouped[sequenceId]) {
+                            grouped[sequenceId] = [];
+                        }
+                        
+                        // Normaliser l'item pour assurer la cohérence
+                        const normalizedItem = {
+                            ...item,
+                            sequence_id: sequenceId,
+                            agent_name: item.agent_name || item.name || 'Unknown',
+                            direction: item.direction || (item.response_content ? 'RESPONSE' : 'REQUEST'),
+                            timestamp: item.timestamp || item.time || new Date().toISOString()
+                        };
+                        
+                        grouped[sequenceId].push(normalizedItem);
+                        
+                        this.agents.add(normalizedItem.agent_name);
+                    } catch (e) {
+                        console.warn('Erreur lors du traitement de l\'item:', item, e.message);
+                    }
+                });
+
+                // Créer les conversations
+                this.conversations = Object.keys(grouped)
+                    .sort((a, b) => {
+                        // Gérer le cas où sequenceId pourrait être 'unknown' ou 'auto_X'
+                        if (a.startsWith('auto_') && b.startsWith('auto_')) {
+                            return parseInt(a.split('_')[1]) - parseInt(b.split('_')[1]);
+                        }
+                        if (a.startsWith('auto_')) return 1;
+                        if (b.startsWith('auto_')) return -1;
+                        if (a === 'unknown') return 1;
+                        if (b === 'unknown') return -1;
+                        return parseInt(a) - parseInt(b);
+                    })
+                    .map(sequenceId => {
+                        try {
+                            const messages = grouped[sequenceId].sort((a, b) => {
+                                try {
+                                    return new Date(a.timestamp) - new Date(b.timestamp);
+                                } catch (e) {
+                                    return 0;
+                                }
+                            });
+                            
+                            return {
+                                sequenceId: sequenceId,
+                                messages,
+                                agent: messages[0]?.agent_name || 'Unknown',
+                                startTime: messages[0]?.timestamp ? new Date(messages[0].timestamp) : new Date(),
+                                duration: this.calculateDuration(messages),
+                                totalTokens: this.calculateTotalTokens(messages)
+                            };
+                        } catch (e) {
+                            console.warn('Erreur lors de la création de la conversation:', sequenceId, e.message);
+                            return null;
+                        }
+                    })
+                    .filter(conv => conv !== null); // Retirer les conversations nulles
+
+                this.filteredConversations = [...this.conversations];
+            }
+
+            calculateDuration(messages) {
+                if (messages.length < 2) return 0;
+                const start = new Date(messages[0].timestamp);
+                const end = new Date(messages[messages.length - 1].timestamp);
+                return (end - start) / 1000;
+            }
+
+            calculateTotalTokens(messages) {
+                return messages.reduce((sum, msg) => {
+                    if (msg.tokens_used) {
+                        // RESPONSE: tokens réels
+                        return sum + msg.tokens_used;
+                    } else if (msg.direction === 'REQUEST') {
+                        // REQUEST: estimer basé sur prompt_total_length ou contenu
+                        const charCount = msg.prompt_total_length || 
+                            (msg.messages_sent ? 
+                                msg.messages_sent.reduce((charSum, m) => charSum + (m.content?.length || 0), 0) : 
+                                (msg.message?.length || 0));
+                        return sum + Math.round(charCount / 3);
+                    }
+                    return sum;
+                }, 0);
+            }
+
+            buildFilters() {
+                // Agent filters
+                const agentFilters = document.getElementById('agentFilters');
+                agentFilters.innerHTML = '';
+                
+                Array.from(this.agents).sort().forEach(agent => {
+                    const div = document.createElement('div');
+                    div.className = 'checkbox-item';
+                    div.innerHTML = `
+                        <input type="checkbox" id="filter_${agent}" checked>
+                        <label for="filter_${agent}">${agent}</label>
+                    `;
+                    agentFilters.appendChild(div);
+                    
+                    div.querySelector('input').addEventListener('change', () => this.applyFilters());
+                });
+
+            }
+
+            applyFilters() {
+                const searchTerm = document.getElementById('searchInput').value.toLowerCase();
+                const showRequest = document.getElementById('filterRequest').checked;
+                const showResponse = document.getElementById('filterResponse').checked;
+                
+                const selectedAgents = Array.from(document.querySelectorAll('#agentFilters input:checked'))
+                    .map(input => input.id.replace('filter_', ''));
+
+                this.filteredConversations = this.conversations.filter(conv => {
+                    // Filter by agent
+                    if (!selectedAgents.includes(conv.agent)) return false;
+                    
+                    
+                    // Filter by direction and search term
+                    const relevantMessages = conv.messages.filter(msg => {
+                        if (!showRequest && msg.direction === 'REQUEST') return false;
+                        if (!showResponse && msg.direction === 'RESPONSE') return false;
+                        return true;
+                    });
+                    
+                    if (relevantMessages.length === 0) return false;
+                    
+                    // Search in message content
+                    if (searchTerm) {
+                        const hasMatch = relevantMessages.some(msg => {
+                            const searchContent = (msg.response_content || msg.message || msg.content || '').toLowerCase();
+                            // Aussi chercher dans les messages_sent pour les REQUEST
+                            const messagesContent = msg.messages_sent ? 
+                                msg.messages_sent.map(m => m.content || '').join(' ').toLowerCase() : '';
+                            return searchContent.includes(searchTerm) || messagesContent.includes(searchTerm);
+                        });
+                        if (!hasMatch) return false;
+                    }
+                    
+                    return true;
+                });
+
+                this.renderConversations();
+                this.updateFilteredStats(); // Mise à jour des statistiques filtrées
+            }
+
+            renderConversations() {
+                const container = document.getElementById('conversationsContainer');
+                
+                if (this.filteredConversations.length === 0) {
+                    container.innerHTML = '<div class="no-data"><h2>🔍 Aucun résultat</h2><p>Aucune conversation ne correspond aux filtres.</p></div>';
+                    this.updateMessageCount(0);
+                    return;
+                }
+
+                let totalMessages = 0;
+                const showRequest = document.getElementById('filterRequest').checked;
+                const showResponse = document.getElementById('filterResponse').checked;
+                
+                const html = this.filteredConversations.map(conv => {
+                    // Compter seulement les messages qui seront affichés
+                    const visibleMessages = conv.messages.filter(msg => {
+                        if (!showRequest && msg.direction === 'REQUEST') return false;
+                        if (!showResponse && msg.direction === 'RESPONSE') return false;
+                        return true;
+                    });
+                    totalMessages += visibleMessages.length;
+                    
+                    return this.renderConversation(conv);
+                }).join('').replace(/^\s*$/gm, '');
+
+                container.innerHTML = html;
+                this.updateMessageCount(totalMessages);
+                
+                // Add event listeners for expand/collapse buttons
+                container.querySelectorAll('.expand-btn').forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        const content = e.target.previousElementSibling;
+                        const isCollapsed = content.classList.contains('collapsed');
+                        
+                        if (isCollapsed) {
+                            content.classList.remove('collapsed');
+                            e.target.textContent = '🔼 Réduire';
+                        } else {
+                            content.classList.add('collapsed');
+                            e.target.textContent = '🔽 Étendre';
+                        }
+                    });
+                });
+            }
+
+            renderConversation(conversation) {
+                const { sequenceId, messages, agent, startTime, duration, totalTokens } = conversation;
+                
+                // Appliquer les filtres aux messages de la conversation
+                const showRequest = document.getElementById('filterRequest').checked;
+                const showResponse = document.getElementById('filterResponse').checked;
+                
+                const filteredMessages = messages.filter(msg => {
+                    if (!showRequest && msg.direction === 'REQUEST') return false;
+                    if (!showResponse && msg.direction === 'RESPONSE') return false;
+                    return true;
+                });
+                
+                if (filteredMessages.length === 0) return '';
+                
+                const messagesHtml = filteredMessages.map(msg => this.renderMessage(msg)).join('');
+                
+                return `
+                    <div class="conversation">
+                        <div class="conversation-header">
+                            <div class="conversation-title">
+                                🔄 Conversation #${sequenceId} - ${agent}
+                            </div>
+                            <div class="conversation-meta">
+                                📅 ${startTime.toLocaleString('fr-FR')} | 
+                                ⏱️ ${duration.toFixed(1)}s | 
+                                🎯 ${totalTokens} tokens
+                            </div>
+                        </div>
+                        ${messagesHtml}
+                    </div>
+                `;
+            }
+
+            renderMessage(message) {
+                // Extraire le contenu selon le type de message
+                let content;
+                if (message.direction === 'REQUEST' && message.messages_sent && message.messages_sent.length > 0) {
+                    // Pour les REQUEST, afficher tous les messages avec leurs rôles
+                    const messageParts = message.messages_sent.map(msg => {
+                        const roleIcon = {
+                            'system': '⚙️',
+                            'user': '👤',
+                            'assistant': '🤖'
+                        }[msg.role || 'unknown'] || '💬';
+                        
+                        const role = String(msg.role || 'unknown').toUpperCase();
+                        const msgContent = String(msg.content || 'Pas de contenu');
+                        
+                        return `${roleIcon} **${role}:**\n${msgContent}`;
+                    }).join('\n\n───────────────\n\n');
+                    
+                    content = messageParts;
+                } else if (message.direction === 'RESPONSE') {
+                    // Pour les RESPONSE, le contenu est dans response_content
+                    content = message.response_content || message.message || 'Pas de contenu';
+                } else {
+                    // Fallback : chercher dans différents champs possibles
+                    content = message.response_content || message.message || message.content || 'Pas de contenu';
+                }
+                
+                // S'assurer que content est une chaîne de caractères
+                if (typeof content !== 'string') {
+                    content = String(content || 'Pas de contenu');
+                }
+                
+                const isLong = content.length > 500;
+                
+                const timestamp = new Date(message.timestamp).toLocaleString('fr-FR');
+                
+                let tokens = '';
+                let duration = '';
+                let directionText = '';
+                
+                if (message.direction === 'REQUEST') {
+                    // Pour les REQUEST : estimer les tokens basé sur la longueur des caractères
+                    const charCount = message.prompt_total_length || content.length;
+                    const estimatedTokens = Math.round(charCount / 3);
+                    tokens = ` | ~${estimatedTokens} tokens (est.)`;
+                    directionText = '📤 ENVOI';
+                } else {
+                    // Pour les RESPONSE : utiliser les tokens réels
+                    tokens = message.tokens_used ? ` | ${message.tokens_used} tokens` : '';
+                    duration = message.duration_seconds && typeof message.duration_seconds === 'number' 
+                        ? ` | ${message.duration_seconds.toFixed(2)}s` : '';
+                    directionText = '📨 RÉPONSE';
+                }
+                
+                const model = message.model ? ` | ${message.model}` : '';
+                const headerText = `${directionText} | Agent: ${message.agent_name}${model}${tokens}${duration}`;
+                
+                return `
+                    <div class="message">
+                        <div class="message-header">
+                            <strong>${headerText}</strong>
+                        </div>
+                        <div class="message-timestamp">📅 ${timestamp}</div>
+                        <hr>
+                        <div class="message-content ${isLong ? 'collapsed' : ''}">${this.formatContent(content)}</div>
+                        ${isLong ? '<button class="expand-btn">🔽 Étendre</button>' : ''}
+                    </div>
+                `;
+            }
+
+            formatContent(content) {
+                // S'assurer que content est une chaîne de caractères
+                let contentStr = typeof content === 'string' ? content : String(content || '');
+                
+                // Décoder les entités HTML si elles sont déjà présentes (éviter le double encodage)
+                if (contentStr.includes('&#39;') || contentStr.includes('&quot;')) {
+                    const tempDiv = document.createElement('div');
+                    tempDiv.innerHTML = contentStr;
+                    contentStr = tempDiv.textContent || tempDiv.innerText || '';
+                }
+                
+                // Escape seulement les caractères dangereux pour HTML
+                const escaped = contentStr
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;');
+                
+                // Simple syntax highlighting for JSON and Python (sans re-encoder les guillemets)
+                return escaped
+                    .replace(/(".*?")/g, '<span style="color: #a5d6ff;">$1</span>')
+                    .replace(/('.*?')/g, '<span style="color: #a5d6ff;">$1</span>')
+                    .replace(/\b(true|false|null|True|False|None)\b/g, '<span style="color: #79c0ff;">$1</span>')
+                    .replace(/\b(\d+(?:\.\d+)?)\b/g, '<span style="color: #79c0ff;">$1</span>')
+                    .replace(/\b(def|class|import|from|if|else|for|while|try|except|return|assert|in)\b/g, '<span style="color: #ff7b72;">$1</span>');
+            }
+
+            updateMessageCount(filtered) {
+                document.getElementById('totalMessages').textContent = this.rawData.length;
+                document.getElementById('filteredMessages').textContent = filtered;
+            }
+
+            updateStats() {
+                const statsGrid = document.getElementById('statsGrid');
+                
+                const agents = {};
+                const models = {};
+                let totalTokens = 0;
+                let totalDuration = 0;
+                
+                this.rawData.forEach(item => {
+                    agents[item.agent_name] = (agents[item.agent_name] || 0) + 1;
+                    if (item.model) models[item.model] = (models[item.model] || 0) + 1;
+                    if (item.tokens_used) totalTokens += item.tokens_used;
+                    if (item.duration_seconds) totalDuration += item.duration_seconds;
+                });
+
+                const topAgent = Object.entries(agents).sort((a, b) => b[1] - a[1])[0];
+                const topModel = Object.entries(models).sort((a, b) => b[1] - a[1])[0];
+
+                statsGrid.innerHTML = `
+                    <div class="stat-item">
+                        <div class="stat-value">${this.conversations.length}</div>
+                        <div class="stat-label">Conversations</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">${totalTokens.toLocaleString()}</div>
+                        <div class="stat-label">Total Tokens</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">${topAgent ? topAgent[0] : 'N/A'}</div>
+                        <div class="stat-label">Agent Principal</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">${(totalDuration / 60).toFixed(1)}min</div>
+                        <div class="stat-label">Durée Totale</div>
+                    </div>
+                `;
+            }
+
+            updateFilteredStats() {
+                const statsGrid = document.getElementById('statsGrid');
+                const statsTitle = document.getElementById('statsTitle');
+                
+                // Vérifier si des filtres sont appliqués
+                const isFiltered = this.filteredConversations.length !== this.conversations.length ||
+                                 document.getElementById('searchInput').value.trim() !== '' ||
+                                 !document.getElementById('filterRequest').checked ||
+                                 !document.getElementById('filterResponse').checked ||
+                                 Array.from(document.querySelectorAll('#agentFilters input')).some(input => !input.checked);
+
+                // Mettre à jour le titre
+                statsTitle.textContent = isFiltered ? '📊 Statistiques (filtrées)' : '📊 Statistiques';
+                
+                if (this.filteredConversations.length === 0) {
+                    statsGrid.innerHTML = `
+                        <div class="stat-item">
+                            <div class="stat-value">0</div>
+                            <div class="stat-label">Conversations</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value">0</div>
+                            <div class="stat-label">Tokens</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value">N/A</div>
+                            <div class="stat-label">Agent Principal</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value">0min</div>
+                            <div class="stat-label">Durée</div>
+                        </div>
+                    `;
+                    return;
+                }
+
+                // Appliquer les mêmes filtres de direction que dans applyFilters
+                const showRequest = document.getElementById('filterRequest').checked;
+                const showResponse = document.getElementById('filterResponse').checked;
+                
+                // Collecter les données filtrées
+                const agents = {};
+                const models = {};
+                let totalTokens = 0;
+                let totalDuration = 0;
+                let totalMessages = 0;
+                let totalPromptLength = 0; // Pour les REQUEST
+                let requestCount = 0;
+                let responseCount = 0;
+
+                this.filteredConversations.forEach(conv => {
+                    // Filtrer les messages par direction comme dans applyFilters
+                    const relevantMessages = conv.messages.filter(msg => {
+                        if (!showRequest && msg.direction === 'REQUEST') return false;
+                        if (!showResponse && msg.direction === 'RESPONSE') return false;
+                        return true;
+                    });
+                    
+                    if (relevantMessages.length > 0) {
+                        totalMessages += relevantMessages.length;
+                        agents[conv.agent] = (agents[conv.agent] || 0) + 1;
+                        
+                        // Calculer différentes métriques selon le type de message
+                        relevantMessages.forEach(msg => {
+                            if (msg.model) models[msg.model] = (models[msg.model] || 0) + 1;
+                            
+                            if (msg.direction === 'REQUEST') {
+                                requestCount++;
+                                // Les REQUEST: estimer les tokens à partir des caractères
+                                const charCount = msg.prompt_total_length || 
+                                    (msg.messages_sent ? 
+                                        msg.messages_sent.reduce((sum, m) => sum + (m.content?.length || 0), 0) : 
+                                        (msg.message?.length || 0));
+                                const estimatedTokens = Math.round(charCount / 3);
+                                totalTokens += estimatedTokens;
+                                if (msg.prompt_total_length) totalPromptLength += msg.prompt_total_length;
+                            } else if (msg.direction === 'RESPONSE') {
+                                responseCount++;
+                                // Les RESPONSE ont tokens_used et duration_seconds
+                                if (msg.tokens_used) totalTokens += msg.tokens_used;
+                                if (msg.duration_seconds) totalDuration += msg.duration_seconds;
+                            }
+                        });
+                    }
+                });
+
+                const topAgent = Object.entries(agents).sort((a, b) => b[1] - a[1])[0];
+                const topModel = Object.entries(models).sort((a, b) => b[1] - a[1])[0];
+
+                // Toujours afficher en tokens (réels + estimés) et durée
+                const secondStatValue = totalTokens.toLocaleString();
+                const secondStatLabel = showRequest && !showResponse ? 'Tokens (est.)' : 
+                                       !showRequest && showResponse ? 'Tokens' : 
+                                       'Tokens (mixte)';
+                
+                const fourthStatValue = showRequest && !showResponse ? 
+                    `${requestCount} req.` : 
+                    `${(totalDuration / 60).toFixed(1)}min`;
+                const fourthStatLabel = showRequest && !showResponse ? 'Requêtes' : 'Durée';
+
+                statsGrid.innerHTML = `
+                    <div class="stat-item">
+                        <div class="stat-value">${this.filteredConversations.length}</div>
+                        <div class="stat-label">Conversations</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">${secondStatValue}</div>
+                        <div class="stat-label">${secondStatLabel}</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">${topAgent ? topAgent[0] : 'N/A'}</div>
+                        <div class="stat-label">Agent Principal</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">${fourthStatValue}</div>
+                        <div class="stat-label">${fourthStatLabel}</div>
+                    </div>
+                `;
+            }
+
+            clearFilters() {
+                document.getElementById('searchInput').value = '';
+                document.getElementById('filterRequest').checked = true;
+                document.getElementById('filterResponse').checked = true;
+                
+                document.querySelectorAll('#agentFilters input').forEach(input => {
+                    input.checked = true;
+                });
+                
+                this.applyFilters();
+            }
+
+            collapseAll() {
+                document.querySelectorAll('.message-content').forEach(content => {
+                    if (!content.classList.contains('collapsed')) {
+                        content.classList.add('collapsed');
+                        const btn = content.nextElementSibling;
+                        if (btn && btn.classList.contains('expand-btn')) {
+                            btn.textContent = '🔽 Étendre';
+                        }
+                    }
+                });
+            }
+
+            expandAll() {
+                document.querySelectorAll('.message-content.collapsed').forEach(content => {
+                    content.classList.remove('collapsed');
+                    const btn = content.nextElementSibling;
+                    if (btn && btn.classList.contains('expand-btn')) {
+                        btn.textContent = '🔼 Réduire';
+                    }
+                });
+            }
+
+            exportData() {
+                const data = {
+                    exported_at: new Date().toISOString(),
+                    total_conversations: this.conversations.length,
+                    filtered_conversations: this.filteredConversations.length,
+                    conversations: this.filteredConversations.map(conv => ({
+                        sequence_id: conv.sequenceId,
+                        agent: conv.agent,
+                        start_time: conv.startTime.toISOString(),
+                        duration: conv.duration,
+                        total_tokens: conv.totalTokens,
+                        messages: conv.messages.map(msg => ({
+                            timestamp: msg.timestamp,
+                            direction: msg.direction,
+                            content: msg.response_content || msg.message || msg.content,
+                            tokens: msg.tokens_used,
+                            duration: msg.duration_seconds,
+                            model: msg.model,
+                            messages_sent: msg.messages_sent
+                        }))
+                    }))
+                };
+
+                const blob = new Blob([JSON.stringify(data, null, 2)], {
+                    type: 'application/json'
+                });
+                
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `llm_export_${new Date().toISOString().split('T')[0]}.json`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            }
+        }
+
+        // Initialize dashboard when page loads
+        window.addEventListener('DOMContentLoaded', () => {
+            new LLMDashboard();
+        });
+    </script>
+</body>
+</html>
